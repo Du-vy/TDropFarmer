@@ -1,0 +1,57 @@
+{
+  "account": {
+    "username": "my_twitch_user"
+  },
+  "auth": {
+    "client_id": "your_twitch_client_id",
+    "scopes": []
+  },
+  "watch": {
+    "max_channels": 2,
+    "priorities": ["streak", "order"],
+    "tick_seconds": 20
+  },
+  "features": {
+    "claim_bonuses": true,
+    "claim_drops": false,
+    "follow_raids": false,
+    "predictions": false,
+    "dry_run": false
+  },
+  "predictions": {
+    "strategy": "smart",
+    "percentage": 5,
+    "percentage_gap": 20,
+    "max_points": 50000,
+    "minimum_points": 20000,
+    "delay_mode": "from_end",
+    "delay_seconds": 6,
+    "stealth_mode": false,
+    "filter_condition": null
+  },
+  "streamers": [
+    {
+      "login": "streamer1",
+      "predictions": false
+    }
+  ],
+  "storage": {
+    "path": "./data"
+  },
+  "logging": {
+    "level": "info",
+    "format": "text",
+    "file": "./data/tdropfarmer.log"
+  },
+  "notifications": {
+    "discord": {
+      "enabled": false,
+      "webhook_url": ""
+    },
+    "webhook": {
+      "enabled": false,
+      "url": "",
+      "method": "POST"
+    }
+  }
+}

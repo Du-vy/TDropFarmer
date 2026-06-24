@@ -1,0 +1,6 @@
+bin/
+dist/
+data/
+*.log
+config.json
+*.local.json
