@@ -15,6 +15,7 @@ const (
 	EventPredictionStart  EventType = "prediction_start"
 	EventPredictionPlaced EventType = "prediction_placed"
 	EventPredictionResult EventType = "prediction_result"
+	EventDropClaimed      EventType = "drop_claimed"
 )
 
 type Event struct {

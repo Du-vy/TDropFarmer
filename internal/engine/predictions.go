@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/Du-vy/TDropFarmer/internal/config"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/predictions"
@@ -13,15 +14,42 @@ type predictionAdapter struct {
 	config config.Config
 	logger *slog.Logger
 	points func(string) int64
+	emit   func(Event)
 }
 
-func NewPredictionAdapter(cfg config.Config, claimer *predictions.PredictionClaimer, logger *slog.Logger, points func(string) int64) PredictionHandler {
-	inner := predictions.NewEngineHandler(cfg, claimer, logger, nil, points)
+type PredictionPlacedPayload struct {
+	Title   string
+	Outcome string
+	Amount  int64
+	DryRun  bool
+}
+
+func NewPredictionAdapter(cfg config.Config, claimer *predictions.PredictionClaimer, logger *slog.Logger, points func(string) int64, emit func(Event)) PredictionHandler {
+	publish := func(ctx context.Context, p predictions.Prediction, d predictions.Decision, dryRun bool) {
+		outcomeTitle := ""
+		if d.Choice >= 0 && d.Choice < len(p.Outcomes) {
+			outcomeTitle = p.Outcomes[d.Choice].Title
+		}
+		emit(Event{
+			Type:      EventPredictionPlaced,
+			Streamer:  p.StreamerLogin,
+			ChannelID: p.ChannelID,
+			Payload: PredictionPlacedPayload{
+				Title:   p.Title,
+				Outcome: outcomeTitle,
+				Amount:  d.Amount,
+				DryRun:  dryRun,
+			},
+			Time: time.Now().UTC(),
+		})
+	}
+	inner := predictions.NewEngineHandler(cfg, claimer, logger, publish, points)
 	return &predictionAdapter{
 		inner:  inner,
 		config: cfg,
 		logger: logger,
 		points: points,
+		emit:   emit,
 	}
 }
 
@@ -59,6 +87,18 @@ func (a *predictionAdapter) HandlePredictionResult(_ context.Context, event Pred
 		PointsWon: result.PointsWon,
 	}
 	a.inner.HandlePredictionResult(context.Background(), pred, predResult)
+
+	// Also emit prediction result event for notification layer
+	a.emit(Event{
+		Type:      EventPredictionResult,
+		Streamer:  event.StreamerLogin,
+		ChannelID: event.ChannelID,
+		Payload: PredictionResultPayload{
+			Prediction: event,
+			Result:     result,
+		},
+		Time: time.Now().UTC(),
+	})
 	return nil
 }
 

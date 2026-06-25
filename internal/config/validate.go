@@ -32,9 +32,6 @@ func Validate(cfg Config) error {
 		}
 	}
 
-	if cfg.Features.ClaimDropsEnabled() {
-		errs = append(errs, fmt.Errorf("features.claim_drops is post-MVP and must remain false for now"))
-	}
 	if cfg.Features.FollowRaidsEnabled() {
 		errs = append(errs, fmt.Errorf("features.follow_raids is post-MVP and must remain false for now"))
 	}
@@ -55,9 +52,6 @@ func Validate(cfg Config) error {
 		}
 		seen[streamer.Login] = struct{}{}
 
-		if streamer.ClaimDrops != nil && *streamer.ClaimDrops {
-			errs = append(errs, fmt.Errorf("%s.claim_drops is post-MVP and must remain false for now", field))
-		}
 		if streamer.FollowRaids != nil && *streamer.FollowRaids {
 			errs = append(errs, fmt.Errorf("%s.follow_raids is post-MVP and must remain false for now", field))
 		}

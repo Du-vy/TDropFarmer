@@ -13,9 +13,11 @@ import (
 	"github.com/Du-vy/TDropFarmer/internal/domain"
 	"github.com/Du-vy/TDropFarmer/internal/engine"
 	"github.com/Du-vy/TDropFarmer/internal/store"
+	"github.com/Du-vy/TDropFarmer/internal/notify"
 	"github.com/Du-vy/TDropFarmer/internal/twitch"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/channelpoints"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/gql"
+	"github.com/Du-vy/TDropFarmer/internal/twitch/inventory"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/playback"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/predictions"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/realtime"
@@ -90,6 +92,7 @@ func (a *App) Run(ctx context.Context) error {
 		&predictions.PredictionClaimer{Client: gqlClient},
 		a.logger,
 		func(login string) int64 { return eng.PointsForStreamer(login) },
+		eng.SendEvent,
 	))
 
 	for _, event := range initialEvents {
@@ -122,12 +125,37 @@ func (a *App) Run(ctx context.Context) error {
 		a.runEventSub(ctx, eng, &helixClient, gqlClient, streamers, &contextLoader)
 	}()
 
+	if a.config.Features.ClaimDropsEnabled() {
+		inventoryClient := inventory.Client{Client: gqlClient}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			a.pollDrops(ctx, eng, inventoryClient)
+		}()
+	}
+
+	var notifier *notify.DiscordNotifier
+	if a.config.Notifications.Discord.Enabled {
+		notifier = notify.NewDiscord(a.config.Notifications.Discord.WebhookURL)
+		a.logger.Info("discord notifier configured", slog.String("webhook_url", a.config.Notifications.Discord.WebhookURL))
+	}
+
 	go func() {
 		for event := range eng.Events() {
 			a.logger.Debug("engine output event",
 				slog.String("type", string(event.Type)),
 				slog.String("streamer", event.Streamer),
 			)
+			if notifier != nil {
+				msg := a.formatEventMessage(event)
+				if msg != "" {
+					go func(message string) {
+						if err := notifier.Send(context.Background(), message); err != nil {
+							a.logger.Warn("discord notification failed", slog.String("error", err.Error()))
+						}
+					}(msg)
+				}
+			}
 		}
 	}()
 
@@ -136,6 +164,109 @@ func (a *App) Run(ctx context.Context) error {
 
 	wg.Wait()
 	return runErr
+}
+
+func (a *App) pollDrops(ctx context.Context, eng *engine.Engine, invClient inventory.Client) {
+	// First check immediately at startup
+	a.checkAndClaimDrops(ctx, eng, invClient)
+
+	ticker := time.NewTicker(15 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.checkAndClaimDrops(ctx, eng, invClient)
+		}
+	}
+}
+
+func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invClient inventory.Client) {
+	drops, err := invClient.GetInventory(ctx)
+	if err != nil {
+		a.logger.Warn("fetch drops inventory failed", slog.String("error", err.Error()))
+		return
+	}
+
+	for _, drop := range drops {
+		if drop.IsClaimable {
+			a.logger.Info("claiming drop",
+				slog.String("id", drop.ID),
+				slog.String("name", drop.Name),
+				slog.String("instance_id", drop.DropInstanceID),
+			)
+			if a.config.Features.DryRunEnabled() {
+				a.logger.Info("dry-run claim drop",
+					slog.String("id", drop.ID),
+					slog.String("name", drop.Name),
+				)
+				eng.SendEvent(engine.Event{
+					Type:     engine.EventDropClaimed,
+					Streamer: drop.CampaignID,
+					Payload:  drop,
+					Time:     time.Now().UTC(),
+				})
+				continue
+			}
+
+			success, err := invClient.ClaimDrop(ctx, drop.DropInstanceID)
+			if err != nil {
+				a.logger.Warn("claim drop failed",
+					slog.String("id", drop.ID),
+					slog.String("name", drop.Name),
+					slog.String("error", err.Error()),
+				)
+				continue
+			}
+			if success {
+				a.logger.Info("drop claimed successfully",
+					slog.String("id", drop.ID),
+					slog.String("name", drop.Name),
+				)
+				eng.SendEvent(engine.Event{
+					Type:     engine.EventDropClaimed,
+					Streamer: drop.CampaignID,
+					Payload:  drop,
+					Time:     time.Now().UTC(),
+				})
+			}
+		}
+	}
+}
+
+func (a *App) formatEventMessage(event engine.Event) string {
+	switch event.Type {
+	case engine.EventOnline:
+		return fmt.Sprintf("🟢 Streamer **%s** is now ONLINE!", event.Streamer)
+	case engine.EventOffline:
+		return fmt.Sprintf("🔴 Streamer **%s** is now OFFLINE!", event.Streamer)
+	case engine.EventBonusClaimed:
+		if res, ok := event.Payload.(channelpoints.ClaimResult); ok {
+			return fmt.Sprintf("💰 Claimed community bonus of **%d** points from **%s**!", res.Points, res.StreamerLogin)
+		}
+		return fmt.Sprintf("💰 Claimed community bonus from **%s**!", event.Streamer)
+	case engine.EventPredictionPlaced:
+		if payload, ok := event.Payload.(engine.PredictionPlacedPayload); ok {
+			dryRunStr := ""
+			if payload.DryRun {
+				dryRunStr = " [Dry Run]"
+			}
+			return fmt.Sprintf("🔮 Placed prediction on **%s**:%s\n**%s**\nApuesta: **%s** (%d puntos)",
+				event.Streamer, dryRunStr, payload.Title, payload.Outcome, payload.Amount)
+		}
+	case engine.EventPredictionResult:
+		if payload, ok := event.Payload.(engine.PredictionResultPayload); ok {
+			return fmt.Sprintf("🏁 Prediction finished on **%s**:\n**%s**\nResultado: **%s** (Puntos ganados: %d)",
+				event.Streamer, payload.Prediction.Title, payload.Result.Type, payload.Result.PointsWon)
+		}
+	case engine.EventDropClaimed:
+		if d, ok := event.Payload.(inventory.Drop); ok {
+			return fmt.Sprintf("🎁 Reclamado Drop: **%s** de campaña **%s**!", d.Name, d.CampaignID)
+		}
+	}
+	return ""
 }
 
 func (a *App) pollOnlineStatus(ctx context.Context, eng *engine.Engine, client *twitch.Client, streamers []domain.Streamer) {

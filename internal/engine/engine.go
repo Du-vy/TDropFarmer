@@ -252,6 +252,10 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handlePredictionResult(ctx, event)
 		return
 	}
+	if event.Type == EventDropClaimed {
+		e.emit(event)
+		return
+	}
 
 	for i, state := range e.streamers {
 		if state.Login != event.Streamer {
