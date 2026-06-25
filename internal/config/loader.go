@@ -57,39 +57,11 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Features.ClaimDrops == nil {
 		cfg.Features.ClaimDrops = Bool(false)
 	}
-	if cfg.Features.FollowRaids == nil {
-		cfg.Features.FollowRaids = Bool(false)
-	}
-	if cfg.Features.Predictions == nil {
-		cfg.Features.Predictions = Bool(false)
-	}
 	if cfg.Features.DryRun == nil {
 		cfg.Features.DryRun = Bool(false)
 	}
 	if cfg.Features.Chat == nil {
 		cfg.Features.Chat = Bool(false)
-	}
-
-	if cfg.Predictions.Strategy == "" {
-		cfg.Predictions.Strategy = "smart"
-	}
-	if cfg.Predictions.Percentage == 0 {
-		cfg.Predictions.Percentage = 5
-	}
-	if cfg.Predictions.PercentageGap == 0 {
-		cfg.Predictions.PercentageGap = 20
-	}
-	if cfg.Predictions.MaxPoints == 0 {
-		cfg.Predictions.MaxPoints = 50000
-	}
-	if cfg.Predictions.MinimumPoints == 0 {
-		cfg.Predictions.MinimumPoints = 20000
-	}
-	if cfg.Predictions.DelayMode == "" {
-		cfg.Predictions.DelayMode = "from_end"
-	}
-	if cfg.Predictions.DelaySeconds == 0 {
-		cfg.Predictions.DelaySeconds = 6
 	}
 
 	if cfg.Storage.Path == "" {

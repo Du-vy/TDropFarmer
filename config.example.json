@@ -10,25 +10,11 @@
   "features": {
     "claim_bonuses": true,
     "claim_drops": false,
-    "follow_raids": false,
-    "predictions": false,
     "dry_run": false
-  },
-  "predictions": {
-    "strategy": "smart",
-    "percentage": 5,
-    "percentage_gap": 20,
-    "max_points": 50000,
-    "minimum_points": 20000,
-    "delay_mode": "from_end",
-    "delay_seconds": 6,
-    "stealth_mode": false,
-    "filter_condition": null
   },
   "streamers": [
     {
-      "login": "streamer1",
-      "predictions": false
+      "login": "streamer1"
     }
   ],
   "storage": {

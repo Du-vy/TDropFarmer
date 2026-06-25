@@ -249,11 +249,14 @@ func (f DeviceFlow) doJSON(req *http.Request, target any) error {
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var oauthErr OAuthError
-		if err := json.Unmarshal(body, &oauthErr); err == nil && oauthErr.ErrorCode != "" {
+		if err := json.Unmarshal(body, &oauthErr); err == nil && (oauthErr.ErrorCode != "" || oauthErr.Message != "") {
+			if oauthErr.ErrorCode == "" {
+				oauthErr.ErrorCode = oauthErr.Message
+			}
 			oauthErr.StatusCode = resp.StatusCode
 			return oauthErr
 		}
-		return fmt.Errorf("twitch oauth request failed: status %d", resp.StatusCode)
+		return fmt.Errorf("twitch oauth request failed: status %d, body %q", resp.StatusCode, string(body))
 	}
 
 	if target == nil {

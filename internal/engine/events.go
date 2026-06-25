@@ -12,9 +12,6 @@ const (
 	EventStreak           EventType = "streak"
 	EventBonusAvailable   EventType = "bonus_available"
 	EventBonusClaimed     EventType = "bonus_claimed"
-	EventPredictionStart  EventType = "prediction_start"
-	EventPredictionPlaced EventType = "prediction_placed"
-	EventPredictionResult EventType = "prediction_result"
 	EventDropClaimed      EventType = "drop_claimed"
 	EventChatMention      EventType = "chat_mention"
 )

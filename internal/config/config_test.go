@@ -39,45 +39,10 @@ func TestDefaultsAndNormalize(t *testing.T) {
 	if !cfg.Features.ClaimBonusesEnabled() {
 		t.Fatalf("claim bonuses default should be enabled")
 	}
-	if cfg.Features.PredictionsEnabled() {
-		t.Fatalf("predictions default should be disabled")
-	}
 }
 
-func TestRejectsPostMVPFeatures(t *testing.T) {
-	cfg := Config{
-		Account: AccountConfig{Username: "my_user"},
-		Auth:    AuthConfig{ClientID: "example-client-id"},
-		Features: FeatureConfig{
-			ClaimDrops:  Bool(true),
-			FollowRaids: Bool(true),
-		},
-	}
 
-	ApplyDefaults(&cfg)
-	Normalize(&cfg)
 
-	if err := Validate(cfg); err == nil {
-		t.Fatalf("Validate returned nil, want post-MVP feature errors")
-	}
-}
-
-func TestRejectsInvalidFixedOutcomeStrategy(t *testing.T) {
-	cfg := Config{
-		Account: AccountConfig{Username: "my_user"},
-		Auth:    AuthConfig{ClientID: "example-client-id"},
-		Predictions: PredictionConfig{
-			Strategy: "fixed_outcome_11",
-		},
-	}
-
-	ApplyDefaults(&cfg)
-	Normalize(&cfg)
-
-	if err := Validate(cfg); err == nil {
-		t.Fatalf("Validate returned nil, want invalid prediction strategy error")
-	}
-}
 
 func TestAuthFallbackDefaults(t *testing.T) {
 	cfg := Config{

@@ -30,55 +30,12 @@ type Engine struct {
 
 	bonusClaimer      channelpoints.BonusClaimer
 	pointRecorder     PointRecorder
-	predictionHandler PredictionHandler
 
 	cancelFunc context.CancelFunc
 }
 
 type PointRecorder interface {
 	RecordPointGain(store.PointGain) error
-}
-
-type PredictionHandler interface {
-	PredictionEnabled() bool
-	HandlePredictionStarted(ctx context.Context, prediction PredictionEvent) error
-	HandlePredictionResult(ctx context.Context, prediction PredictionEvent, result PredictionResultEvent) error
-}
-
-type PredictionEvent struct {
-	EventID       string
-	Title         string
-	ChannelID     string
-	StreamerLogin string
-	Status        string
-	Outcomes      []PredictionOutcome
-	TimerSeconds  int
-}
-
-type PredictionOutcome struct {
-	ID              string
-	Title           string
-	Color           string
-	TotalUsers      int64
-	TotalPoints     int64
-	TopPoints       int64
-	PercentageUsers float64
-	Odds            float64
-	OddsPercentage  float64
-}
-
-type PredictionResultType string
-
-const (
-	PredictionWin    PredictionResultType = "WIN"
-	PredictionLose   PredictionResultType = "LOSE"
-	PredictionRefund PredictionResultType = "REFUND"
-)
-
-type PredictionResultEvent struct {
-	EventID   string
-	Type      PredictionResultType
-	PointsWon int64
 }
 
 type Option func(*Engine)
@@ -93,16 +50,6 @@ func WithPointRecorder(recorder PointRecorder) Option {
 	return func(e *Engine) {
 		e.pointRecorder = recorder
 	}
-}
-
-func WithPredictionHandler(handler PredictionHandler) Option {
-	return func(e *Engine) {
-		e.predictionHandler = handler
-	}
-}
-
-func (e *Engine) SetPredictionHandler(handler PredictionHandler) {
-	e.predictionHandler = handler
 }
 
 func New(cfg config.Config, resolved []domain.Streamer, logger *slog.Logger, opts ...Option) *Engine {
@@ -142,9 +89,6 @@ func applyConfigOverrides(states []StreamerState, cfgStreamers []config.Streamer
 		if cfg, ok := lookup[state.Login]; ok {
 			if cfg.ClaimDrops != nil {
 				_ = *cfg.ClaimDrops
-			}
-			if cfg.FollowRaids != nil {
-				_ = *cfg.FollowRaids
 			}
 		}
 		states[i] = state
@@ -242,14 +186,6 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 
 	if event.Type == EventBonusAvailable {
 		e.handleBonusAvailable(ctx, event)
-		return
-	}
-	if event.Type == EventPredictionStart {
-		e.handlePredictionStart(ctx, event)
-		return
-	}
-	if event.Type == EventPredictionResult {
-		e.handlePredictionResult(ctx, event)
 		return
 	}
 	if event.Type == EventDropClaimed {
@@ -486,37 +422,4 @@ func (e *Engine) ActiveStreamers() []string {
 		}
 	}
 	return logins
-}
-
-func (e *Engine) handlePredictionStart(ctx context.Context, event Event) {
-	if e.predictionHandler == nil {
-		return
-	}
-	pred, ok := event.Payload.(PredictionEvent)
-	if !ok {
-		e.logger.Warn("prediction start event has unsupported payload")
-		return
-	}
-	if err := e.predictionHandler.HandlePredictionStarted(ctx, pred); err != nil {
-		e.logger.Warn("handle prediction start failed", slog.String("error", err.Error()))
-	}
-}
-
-func (e *Engine) handlePredictionResult(ctx context.Context, event Event) {
-	if e.predictionHandler == nil {
-		return
-	}
-	payload, ok := event.Payload.(PredictionResultPayload)
-	if !ok {
-		e.logger.Warn("prediction result event has unsupported payload")
-		return
-	}
-	if err := e.predictionHandler.HandlePredictionResult(ctx, payload.Prediction, payload.Result); err != nil {
-		e.logger.Warn("handle prediction result failed", slog.String("error", err.Error()))
-	}
-}
-
-type PredictionResultPayload struct {
-	Prediction PredictionEvent
-	Result     PredictionResultEvent
 }

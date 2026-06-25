@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -20,8 +21,6 @@ import (
 	"github.com/Du-vy/TDropFarmer/internal/twitch/gql"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/inventory"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/playback"
-	"github.com/Du-vy/TDropFarmer/internal/twitch/predictions"
-	"github.com/Du-vy/TDropFarmer/internal/twitch/realtime"
 )
 
 type App struct {
@@ -56,9 +55,23 @@ func (a *App) Run(ctx context.Context) error {
 	token, validation, err := flow.ValidToken(ctx)
 	if err != nil {
 		if errors.Is(err, store.ErrTokenNotFound) {
-			return fmt.Errorf("no token found; run `tdropfarmer login --config <path>` first")
+			a.logger.Info("no token found; starting device login flow")
+		} else {
+			a.logger.Warn("existing token could not be used; starting device login flow", slog.String("error", err.Error()))
 		}
-		return fmt.Errorf("validate token: %w", err)
+
+		token, err = flow.Login(ctx, func(prompt auth.DevicePrompt) {
+			fmt.Fprintf(os.Stdout, "Open %s and enter code %s\n", prompt.VerificationURI, prompt.UserCode)
+			fmt.Fprintf(os.Stdout, "Code expires in %s\n", prompt.ExpiresIn.Round(0))
+		})
+		if err != nil {
+			return fmt.Errorf("device login: %w", err)
+		}
+
+		_, validation, err = flow.ValidToken(ctx)
+		if err != nil {
+			return fmt.Errorf("validate login token: %w", err)
+		}
 	}
 	a.logger.Info("authenticated",
 		slog.String("login", validation.Login),
@@ -95,13 +108,7 @@ func (a *App) Run(ctx context.Context) error {
 		engine.WithPointRecorder(store.NewStateStore(a.config.Storage.Path)),
 		engine.WithBonusClaimer(channelpoints.GraphQLBonusClaimer{Client: gqlClient}),
 	)
-	eng.SetPredictionHandler(engine.NewPredictionAdapter(
-		a.config,
-		&predictions.PredictionClaimer{Client: gqlClient},
-		a.logger,
-		func(login string) int64 { return eng.PointsForStreamer(login) },
-		eng.SendEvent,
-	))
+
 
 	for _, event := range initialEvents {
 		eng.SendEvent(event)
@@ -127,11 +134,7 @@ func (a *App) Run(ctx context.Context) error {
 		a.runMinuteWatched(ctx, eng, gqlClient, streamers)
 	}()
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		a.runEventSub(ctx, eng, &helixClient, gqlClient, streamers, &contextLoader)
-	}()
+
 
 	if a.config.Features.ClaimDropsEnabled() {
 		inventoryClient := inventory.Client{Client: gqlClient}
@@ -265,20 +268,6 @@ func (a *App) formatEventMessage(event engine.Event) string {
 			return fmt.Sprintf("💰 Claimed community bonus of **%d** points from **%s**!", res.Points, res.StreamerLogin)
 		}
 		return fmt.Sprintf("💰 Claimed community bonus from **%s**!", event.Streamer)
-	case engine.EventPredictionPlaced:
-		if payload, ok := event.Payload.(engine.PredictionPlacedPayload); ok {
-			dryRunStr := ""
-			if payload.DryRun {
-				dryRunStr = " [Dry Run]"
-			}
-			return fmt.Sprintf("🔮 Placed prediction on **%s**:%s\n**%s**\nApuesta: **%s** (%d puntos)",
-				event.Streamer, dryRunStr, payload.Title, payload.Outcome, payload.Amount)
-		}
-	case engine.EventPredictionResult:
-		if payload, ok := event.Payload.(engine.PredictionResultPayload); ok {
-			return fmt.Sprintf("🏁 Prediction finished on **%s**:\n**%s**\nResultado: **%s** (Puntos ganados: %d)",
-				event.Streamer, payload.Prediction.Title, payload.Result.Type, payload.Result.PointsWon)
-		}
 	case engine.EventDropClaimed:
 		if d, ok := event.Payload.(inventory.Drop); ok {
 			return fmt.Sprintf("🎁 Reclamado Drop: **%s** de campaña **%s**!", d.Name, d.CampaignID)
@@ -440,33 +429,6 @@ func streamerLogins(streamers []config.StreamerConfig) []string {
 	return logins
 }
 
-func (a *App) runEventSub(ctx context.Context, eng *engine.Engine, helixClient *twitch.Client, gqlClient gql.Client, streamers []domain.Streamer, contextLoader *channelpoints.ContextLoader) {
-	bridge := &eventSubBridge{
-		engine:       eng,
-		streamers:    streamers,
-		pointsClient: contextLoader,
-		logger:       a.logger,
-		onSession: func(sessionID string) {
-		},
-	}
-
-	realtimeClient := realtime.Client{
-		ClientID:    a.config.Auth.ClientID,
-		AccessToken: helixClient.AccessToken,
-	}
-
-	for {
-		err := realtimeClient.Listen(ctx, bridge, a.logger)
-		if err != nil {
-			a.logger.Warn("eventsub listener exited", slog.String("error", err.Error()))
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(10 * time.Second):
-		}
-	}
-}
 
 func (a *App) startChat(ctx context.Context, eng *engine.Engine, login string, token string) {
 	a.chatMu.Lock()

@@ -101,7 +101,6 @@ internal/
     drop.go
     campaign.go
     prediction.go
-    raid.go
     event.go
 
   store/
@@ -269,8 +268,6 @@ Responsibilities:
 - Place predictions when enabled.
 - Report win/loss/refund.
 
-Prediction support must be optional globally and per streamer.
-
 ### internal/engine
 
 Runtime orchestration.
@@ -281,7 +278,7 @@ Responsibilities:
 - Choose which streamers to watch.
 - Enforce max watched channels, default 2.
 - React to real-time and polled Twitch events.
-- Trigger enabled actions such as bonus claims, predictions, future drops, and future raids.
+- Trigger enabled actions such as bonus claims and future drops.
 - Coordinate workers using context cancellation.
 
 The engine should depend on interfaces, not concrete Twitch clients where practical.
@@ -296,8 +293,6 @@ Responsibilities:
 - Stream.
 - Drop.
 - Campaign.
-- Prediction.
-- Raid.
 - Events.
 
 Domain objects should not perform HTTP requests or read files.
@@ -401,7 +396,6 @@ Out of scope for MVP:
 - Chat IRC.
 - Drops campaign/inventory support.
 - Auto-claim drops.
-- Raid following.
 - Advanced notification integrations beyond generic webhook or Discord.
 - Multi-account orchestration.
 
@@ -411,7 +405,6 @@ Potential second-phase features:
 
 - Drops campaign/inventory support.
 - Auto-claim drops.
-- Raid following.
 - Chat presence.
 - Followers import and blacklist.
 - Moments and community-goals support.
@@ -442,35 +435,14 @@ Initial `config.json` shape:
   "features": {
     "claim_bonuses": true,
     "claim_drops": false,
-    "follow_raids": false,
-    "predictions": false,
     "dry_run": false
-  },
-  "predictions": {
-    "strategy": "smart",
-    "percentage": 5,
-    "percentage_gap": 20,
-    "max_points": 50000,
-    "minimum_points": 20000,
-    "delay_mode": "from_end",
-    "delay_seconds": 6,
-    "stealth_mode": false,
-    "filter_condition": null
   },
   "streamers": [
     {
-      "login": "streamer1",
-      "predictions": false
+      "login": "streamer1"
     },
     {
-      "login": "streamer2",
-      "predictions": true,
-      "prediction_settings": {
-        "strategy": "most_voted",
-        "percentage": 3,
-        "percentage_gap": 20,
-        "max_points": 10000
-      }
+      "login": "streamer2"
     }
   ],
   "storage": {
@@ -495,7 +467,7 @@ Initial `config.json` shape:
 }
 ```
 
-In MVP, `claim_drops` and `follow_raids` should default to `false` because those features are post-MVP. Keeping the keys in the sample config is acceptable if validation rejects or warns when unsupported post-MVP features are enabled.
+In MVP, `claim_drops` should default to `false` because that feature is post-MVP. Keeping the keys in the sample config is acceptable if validation rejects or warns when unsupported post-MVP features are enabled.
 
 Per-streamer booleans are overrides. Missing means inherit the global value, `true` means force enabled for that streamer, and `false` means force disabled. In Go this should be represented with optional values such as `*bool`, not plain `bool`, so omitted and false remain distinct.
 
@@ -708,20 +680,12 @@ The README should include a clear disclaimer.
 - Claim bonus unless dry-run is enabled.
 - Log and persist point gains.
 
-### Milestone 7: Predictions
 
-- Parse prediction events.
-- Implement strategies.
-- Implement filters and delays.
-- Place predictions when enabled.
-- Fully support dry-run.
-
-### Milestone 8: Drops And Raids
+### Milestone 8: Drops
 
 - Load campaigns/inventory.
 - Track drop progress.
 - Claim drops.
-- Follow raids if enabled.
 
 ## Open Questions
 
