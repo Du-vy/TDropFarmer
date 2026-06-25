@@ -96,4 +96,15 @@ func TestFormatEventMessage(t *testing.T) {
 	if msg != expected {
 		t.Errorf("expected %q, got %q", expected, msg)
 	}
+
+	// Test EventChatMention
+	msg = app.formatEventMessage(engine.Event{
+		Type:     engine.EventChatMention,
+		Streamer: "streamer1",
+		Payload:  "[anotheruser]: hello @myuser",
+	})
+	expected = "💬 Mención detectada en el chat de **streamer1**:\n[anotheruser]: hello @myuser"
+	if msg != expected {
+		t.Errorf("expected %q, got %q", expected, msg)
+	}
 }

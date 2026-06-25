@@ -16,6 +16,7 @@ import (
 	"github.com/Du-vy/TDropFarmer/internal/notify"
 	"github.com/Du-vy/TDropFarmer/internal/twitch"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/channelpoints"
+	"github.com/Du-vy/TDropFarmer/internal/twitch/chat"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/gql"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/inventory"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/playback"
@@ -24,13 +25,20 @@ import (
 )
 
 type App struct {
-	config     config.Config
-	logger     *slog.Logger
-	tokenStore auth.TokenStore
+	config      config.Config
+	logger      *slog.Logger
+	tokenStore  auth.TokenStore
+	chatMu      sync.Mutex
+	chatCancels map[string]context.CancelFunc
 }
 
 func New(cfg config.Config, logger *slog.Logger, tokenStore auth.TokenStore) *App {
-	return &App{config: cfg, logger: logger, tokenStore: tokenStore}
+	return &App{
+		config:      cfg,
+		logger:      logger,
+		tokenStore:  tokenStore,
+		chatCancels: make(map[string]context.CancelFunc),
+	}
 }
 
 func (a *App) Run(ctx context.Context) error {
@@ -146,6 +154,16 @@ func (a *App) Run(ctx context.Context) error {
 				slog.String("type", string(event.Type)),
 				slog.String("streamer", event.Streamer),
 			)
+
+			if event.Type == engine.EventOnline {
+				if a.shouldJoinChat(event.Streamer) {
+					a.startChat(ctx, eng, event.Streamer, token.AccessToken)
+				}
+			}
+			if event.Type == engine.EventOffline {
+				a.stopChat(event.Streamer)
+			}
+
 			if notifier != nil {
 				msg := a.formatEventMessage(event)
 				if msg != "" {
@@ -264,6 +282,10 @@ func (a *App) formatEventMessage(event engine.Event) string {
 	case engine.EventDropClaimed:
 		if d, ok := event.Payload.(inventory.Drop); ok {
 			return fmt.Sprintf("🎁 Reclamado Drop: **%s** de campaña **%s**!", d.Name, d.CampaignID)
+		}
+	case engine.EventChatMention:
+		if payloadStr, ok := event.Payload.(string); ok {
+			return fmt.Sprintf("💬 Mención detectada en el chat de **%s**:\n%s", event.Streamer, payloadStr)
 		}
 	}
 	return ""
@@ -444,4 +466,60 @@ func (a *App) runEventSub(ctx context.Context, eng *engine.Engine, helixClient *
 		case <-time.After(10 * time.Second):
 		}
 	}
+}
+
+func (a *App) startChat(ctx context.Context, eng *engine.Engine, login string, token string) {
+	a.chatMu.Lock()
+	defer a.chatMu.Unlock()
+
+	if _, exists := a.chatCancels[login]; exists {
+		return
+	}
+
+	chatCtx, cancel := context.WithCancel(ctx)
+	a.chatCancels[login] = cancel
+
+	username := a.config.Account.Username
+	client := chat.NewClient(username, token, login, a.logger, func(sender, message string) {
+		eng.SendEvent(engine.Event{
+			Type:     engine.EventChatMention,
+			Streamer: login,
+			Payload:  fmt.Sprintf("[%s]: %s", sender, message),
+			Time:     time.Now().UTC(),
+		})
+	})
+
+	go func() {
+		defer func() {
+			a.chatMu.Lock()
+			delete(a.chatCancels, login)
+			a.chatMu.Unlock()
+		}()
+		if err := client.Run(chatCtx); err != nil && err != context.Canceled {
+			a.logger.Warn("chat connection error", slog.String("channel", login), slog.String("error", err.Error()))
+		}
+	}()
+}
+
+func (a *App) stopChat(login string) {
+	a.chatMu.Lock()
+	defer a.chatMu.Unlock()
+
+	if cancel, exists := a.chatCancels[login]; exists {
+		cancel()
+		delete(a.chatCancels, login)
+		a.logger.Info("left chat presence", slog.String("channel", login))
+	}
+}
+
+func (a *App) shouldJoinChat(login string) bool {
+	for _, s := range a.config.Streamers {
+		if s.Login == login {
+			if s.Chat != nil {
+				return *s.Chat
+			}
+			break
+		}
+	}
+	return a.config.Features.ChatEnabled()
 }

@@ -33,6 +33,7 @@ type FeatureConfig struct {
 	FollowRaids  *bool `json:"follow_raids"`
 	Predictions  *bool `json:"predictions"`
 	DryRun       *bool `json:"dry_run"`
+	Chat         *bool `json:"chat"`
 }
 
 func (f FeatureConfig) ClaimBonusesEnabled() bool { return boolDefault(f.ClaimBonuses, true) }
@@ -40,6 +41,7 @@ func (f FeatureConfig) ClaimDropsEnabled() bool   { return boolDefault(f.ClaimDr
 func (f FeatureConfig) FollowRaidsEnabled() bool  { return boolDefault(f.FollowRaids, false) }
 func (f FeatureConfig) PredictionsEnabled() bool  { return boolDefault(f.Predictions, false) }
 func (f FeatureConfig) DryRunEnabled() bool       { return boolDefault(f.DryRun, false) }
+func (f FeatureConfig) ChatEnabled() bool         { return boolDefault(f.Chat, false) }
 
 type PredictionConfig struct {
 	Strategy        string           `json:"strategy"`
@@ -64,6 +66,7 @@ type StreamerConfig struct {
 	ClaimDrops         *bool             `json:"claim_drops,omitempty"`
 	FollowRaids        *bool             `json:"follow_raids,omitempty"`
 	Predictions        *bool             `json:"predictions,omitempty"`
+	Chat               *bool             `json:"chat,omitempty"`
 	PredictionSettings *PredictionConfig `json:"prediction_settings,omitempty"`
 }
 

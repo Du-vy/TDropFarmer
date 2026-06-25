@@ -52,6 +52,9 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Features.DryRun == nil {
 		cfg.Features.DryRun = Bool(false)
 	}
+	if cfg.Features.Chat == nil {
+		cfg.Features.Chat = Bool(false)
+	}
 
 	if cfg.Predictions.Strategy == "" {
 		cfg.Predictions.Strategy = "smart"
