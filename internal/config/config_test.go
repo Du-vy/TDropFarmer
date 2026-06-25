@@ -78,3 +78,24 @@ func TestRejectsInvalidFixedOutcomeStrategy(t *testing.T) {
 		t.Fatalf("Validate returned nil, want invalid prediction strategy error")
 	}
 }
+
+func TestAuthFallbackDefaults(t *testing.T) {
+	cfg := Config{
+		Account: AccountConfig{Username: "my_user"},
+	}
+
+	ApplyDefaults(&cfg)
+	Normalize(&cfg)
+
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate failed with default TV auth credentials: %v", err)
+	}
+
+	if cfg.Auth.ClientID != "ue6666qo983tsx6so1t0vnawi233wa" {
+		t.Fatalf("expected ClientID 'ue6666qo983tsx6so1t0vnawi233wa', got %q", cfg.Auth.ClientID)
+	}
+
+	if len(cfg.Auth.Scopes) == 0 {
+		t.Fatalf("expected default scopes to be populated")
+	}
+}

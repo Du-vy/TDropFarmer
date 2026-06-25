@@ -2,10 +2,6 @@
   "account": {
     "username": "my_twitch_user"
   },
-  "auth": {
-    "client_id": "your_twitch_client_id",
-    "scopes": []
-  },
   "watch": {
     "max_channels": 2,
     "priorities": ["streak", "order"],

@@ -27,6 +27,20 @@ func Load(path string) (Config, error) {
 }
 
 func ApplyDefaults(cfg *Config) {
+	if cfg.Auth.ClientID == "" {
+		cfg.Auth.ClientID = "ue6666qo983tsx6so1t0vnawi233wa"
+	}
+	if len(cfg.Auth.Scopes) == 0 {
+		cfg.Auth.Scopes = []string{
+			"channel_read",
+			"chat:read",
+			"user_blocks_edit",
+			"user_blocks_read",
+			"user_follows_edit",
+			"user_read",
+		}
+	}
+
 	if cfg.Watch.MaxChannels == 0 {
 		cfg.Watch.MaxChannels = 2
 	}
