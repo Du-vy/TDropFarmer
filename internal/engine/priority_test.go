@@ -67,24 +67,12 @@ func TestSelectActive(t *testing.T) {
 		{Login: "c", StreakReady: false, Priority: 2, Online: true, GameName: "GameC"},
 	}
 	prefs := parsePriorities([]string{"streak", "order"})
-	active := selectActive(prefs, states, nil, false, 2)
-	if len(active) != 2 {
-		t.Fatalf("len = %d, want 2", len(active))
+	active := selectActive(prefs, states, nil, false, 3)
+	if len(active) != 3 {
+		t.Fatalf("len = %d, want 3", len(active))
 	}
-	if active[0].Login != "a" || active[1].Login != "b" {
-		t.Fatalf("active = %v, want [a b]", logins(active))
-	}
-}
-
-func TestSelectActiveMaxOne(t *testing.T) {
-	states := []StreamerState{
-		{Login: "a", StreakReady: true, Online: true, GameName: "GameA"},
-		{Login: "b", StreakReady: true, Online: true, GameName: "GameB"},
-	}
-	prefs := parsePriorities([]string{"streak", "order"})
-	active := selectActive(prefs, states, nil, false, 1)
-	if len(active) != 1 {
-		t.Fatalf("len = %d, want 1", len(active))
+	if active[0].Login != "a" || active[1].Login != "b" || active[2].Login != "c" {
+		t.Fatalf("active = %v, want [a b c]", logins(active))
 	}
 }
 
@@ -169,7 +157,7 @@ func TestSelectActiveOnePerCampaign(t *testing.T) {
 
 	prefs := parsePriorities([]string{"order"})
 
-	// With maxChannels = 2, it should pick 1 for Corepunk (c1) and 1 for THE FINALS (f1)
+	// It should pick 1 for Corepunk (c1) and 1 for THE FINALS (f1)
 	active := selectActive(prefs, states, activeGames, true, 2)
 	if len(active) != 2 {
 		t.Fatalf("len = %d, want 2", len(active))
@@ -196,7 +184,7 @@ func TestSelectActiveStaticAlwaysOnline(t *testing.T) {
 
 	prefs := parsePriorities([]string{"order"})
 
-	// With maxChannels = 2, it must pick the static stream 'smite' (even though SMITE 2 is not in activeGames)
+	// It must pick the static stream 'smite' (even though SMITE 2 is not in activeGames)
 	// and the best dynamic stream 'c1' for Corepunk.
 	active := selectActive(prefs, states, activeGames, true, 2)
 	if len(active) != 2 {
@@ -207,6 +195,39 @@ func TestSelectActiveStaticAlwaysOnline(t *testing.T) {
 	hasC1 := stateSliceHas(active, "c1")
 	if !hasSmite || !hasC1 {
 		t.Fatalf("active = %v, want [smite c1]", logins(active))
+	}
+}
+
+func TestSelectActiveMaxCampaignsLimit(t *testing.T) {
+	activeGames := []string{"Corepunk", "THE FINALS", "Albion Online"}
+
+	states := []StreamerState{
+		// Static online stream (not in active games list, or matches, shouldn't count towards dynamic limit)
+		{Login: "smite", Online: true, GameName: "SMITE 2", IsStatic: true, Priority: 10},
+		// Dynamic streams for 3 different active games
+		{Login: "c1", Online: true, GameName: "Corepunk", IsStatic: false, Priority: 1},
+		{Login: "f1", Online: true, GameName: "THE FINALS", IsStatic: false, Priority: 2},
+		{Login: "a1", Online: true, GameName: "Albion Online", IsStatic: false, Priority: 3},
+	}
+
+	prefs := parsePriorities([]string{"order"})
+
+	// With maxCampaigns = 2, it should pick the static stream 'smite' AND 2 dynamic streams (c1 and f1, which have higher priority/lower rank order)
+	active := selectActive(prefs, states, activeGames, true, 2)
+	if len(active) != 3 {
+		t.Fatalf("len = %d, want 3 (1 static + 2 dynamic)", len(active))
+	}
+
+	hasSmite := stateSliceHas(active, "smite")
+	hasC1 := stateSliceHas(active, "c1")
+	hasF1 := stateSliceHas(active, "f1")
+	hasA1 := stateSliceHas(active, "a1")
+
+	if !hasSmite || !hasC1 || !hasF1 {
+		t.Fatalf("active = %v, want [smite c1 f1]", logins(active))
+	}
+	if hasA1 {
+		t.Fatalf("active = %v, should not contain a1 due to maxCampaigns limit", logins(active))
 	}
 }
 

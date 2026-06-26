@@ -14,6 +14,9 @@ const (
 
 	claimDropOperation = "DropsPage_ClaimDropRewards"
 	claimDropHash      = "a455deea71bdc9015b78eb49f4acfbce8baa7ccbedd28e549bb025bd0f751930"
+
+	viewerCampaignsOperation = "ViewerDropsDashboard"
+	viewerCampaignsHash      = "5a4da2ab3d5b47c9f9ce864e727b2cb346af1e3ea8b897fe8f704a97ff017619"
 )
 
 type GQLClient interface {
@@ -167,3 +170,58 @@ type inventoryResponse struct {
 		} `json:"inventory"`
 	} `json:"currentUser"`
 }
+
+type viewerCampaignsResponse struct {
+	CurrentUser *struct {
+		DropCampaigns []struct {
+			ID     string `json:"id"`
+			Name   string `json:"name"`
+			Status string `json:"status"` // ACTIVE, UPCOMING, EXPIRED
+			Game   struct {
+				ID          string `json:"id"`
+				DisplayName string `json:"displayName"`
+			} `json:"game"`
+		} `json:"dropCampaigns"`
+	} `json:"currentUser"`
+}
+
+func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, error) {
+	if c.Client == nil {
+		return nil, fmt.Errorf("graphql client is required")
+	}
+
+	response, err := c.Client.Do(ctx, gql.Request{
+		OperationName: viewerCampaignsOperation,
+		Variables: map[string]any{
+			"fetchRewardCampaigns": false,
+		},
+		Extensions: persistedQuery(viewerCampaignsHash),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var data viewerCampaignsResponse
+	if err := json.Unmarshal(response.Data, &data); err != nil {
+		return nil, fmt.Errorf("decode campaigns response: %w", err)
+	}
+
+	if data.CurrentUser == nil {
+		return nil, nil
+	}
+
+	seen := make(map[string]bool)
+	var games []string
+	for _, campaign := range data.CurrentUser.DropCampaigns {
+		if campaign.Status == "ACTIVE" && campaign.Game.DisplayName != "" {
+			name := campaign.Game.DisplayName
+			if !seen[name] {
+				seen[name] = true
+				games = append(games, name)
+			}
+		}
+	}
+
+	return games, nil
+}
+

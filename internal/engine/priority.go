@@ -62,7 +62,7 @@ func byPriority(prefs []priorityLevel, a, b StreamerState) bool {
 	return false
 }
 
-func selectActive(prefs []priorityLevel, states []StreamerState, activeGames []string, filterByActiveGames bool, maxChannels int) []StreamerState {
+func selectActive(prefs []priorityLevel, states []StreamerState, activeGames []string, filterByActiveGames bool, maxCampaigns int) []StreamerState {
 	var selected []StreamerState
 
 	// 1. Select all static online channels
@@ -70,12 +70,6 @@ func selectActive(prefs []priorityLevel, states []StreamerState, activeGames []s
 		if state.IsStatic && state.Online {
 			selected = append(selected, state)
 		}
-	}
-
-	// If we've already reached or exceeded maxChannels, return the top maxChannels static streams
-	if len(selected) >= maxChannels {
-		rankedStatic := rankStreamers(prefs, selected)
-		return rankedStatic[:maxChannels]
 	}
 
 	// 2. Identify dynamic online channels
@@ -114,13 +108,13 @@ func selectActive(prefs []priorityLevel, states []StreamerState, activeGames []s
 	// 4. Rank the best unique campaign/game dynamic streams
 	rankedDynamic := rankStreamers(prefs, bestDynamicPerGame)
 
-	// 5. Fill remaining capacity with top dynamic channels
-	remainingCapacity := maxChannels - len(selected)
-	if remainingCapacity > len(rankedDynamic) {
-		remainingCapacity = len(rankedDynamic)
+	// 5. Select up to maxCampaigns dynamic channels
+	limit := maxCampaigns
+	if limit > len(rankedDynamic) {
+		limit = len(rankedDynamic)
 	}
 
-	selected = append(selected, rankedDynamic[:remainingCapacity]...)
+	selected = append(selected, rankedDynamic[:limit]...)
 	return selected
 }
 

@@ -115,27 +115,46 @@ func (a *App) Run(ctx context.Context) error {
 		AccessToken: token.AccessToken,
 	}
 
-	// Load initial active games from inventory if drops are enabled
+	// Load initial active games from inventory or active campaigns if drops are enabled
 	var initialActiveGames []string
 	if a.config.Features.ClaimDropsEnabled() {
 		inventoryClient := inventory.Client{Client: gqlClient}
-		drops, err := inventoryClient.GetInventory(ctx)
-		if err != nil {
-			a.logger.Warn("initial inventory fetch failed", slog.String("error", err.Error()))
+		var activeGamesList []string
+		
+		// 1. Fetch in-progress uncompleted campaigns
+		drops, errInv := inventoryClient.GetInventory(ctx)
+		inProgressMap := make(map[string]bool)
+		if errInv != nil {
+			a.logger.Warn("initial inventory fetch failed", slog.String("error", errInv.Error()))
 		} else {
-			activeGamesMap := make(map[string]bool)
 			for _, drop := range drops {
 				if !drop.IsClaimed && drop.GameName != "" {
-					activeGamesMap[drop.GameName] = true
+					if !inProgressMap[drop.GameName] {
+						inProgressMap[drop.GameName] = true
+						activeGamesList = append(activeGamesList, drop.GameName)
+					}
 				}
 			}
-			for game := range activeGamesMap {
-				initialActiveGames = append(initialActiveGames, game)
-			}
-			a.activeGamesMu.Lock()
-			a.activeGames = initialActiveGames
-			a.activeGamesMu.Unlock()
 		}
+
+		// 2. Fetch all other active campaigns if auto_start is enabled
+		if a.config.Watch.AllCampaigns && a.config.Watch.AutoStartCampaigns {
+			availableCampaignGames, err := inventoryClient.GetActiveCampaignGames(ctx)
+			if err != nil {
+				a.logger.Warn("initial active campaign games fetch failed", slog.String("error", err.Error()))
+			} else {
+				for _, game := range availableCampaignGames {
+					if !inProgressMap[game] && game != "" {
+						activeGamesList = append(activeGamesList, game)
+					}
+				}
+			}
+		}
+
+		initialActiveGames = activeGamesList
+		a.activeGamesMu.Lock()
+		a.activeGames = initialActiveGames
+		a.activeGamesMu.Unlock()
 	}
 
 	hasGamesConfigured := len(a.config.Watch.Games) > 0
@@ -194,7 +213,7 @@ func (a *App) Run(ctx context.Context) error {
 		a.runMinuteWatched(ctx, eng, gqlClient)
 	}()
 
-	if len(a.config.Watch.Games) > 0 {
+	if len(a.config.Watch.Games) > 0 || useAllCampaigns {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -342,8 +361,23 @@ func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invCli
 	}
 
 	var activeGames []string
+	inProgressMap := make(map[string]bool)
 	for game := range activeGamesMap {
+		inProgressMap[game] = true
 		activeGames = append(activeGames, game)
+	}
+
+	if a.config.Watch.AllCampaigns && a.config.Watch.AutoStartCampaigns {
+		availableCampaignGames, err := invClient.GetActiveCampaignGames(ctx)
+		if err != nil {
+			a.logger.Warn("fetch active campaign games failed", slog.String("error", err.Error()))
+		} else {
+			for _, game := range availableCampaignGames {
+				if !inProgressMap[game] && game != "" {
+					activeGames = append(activeGames, game)
+				}
+			}
+		}
 	}
 
 	a.activeGamesMu.Lock()
@@ -448,18 +482,29 @@ func (a *App) discoverGamesStreamers(ctx context.Context, client discovery.Clien
 		gamesToDiscover = a.config.Watch.Games
 	}
 
+	activeGamesCount := 0
 	for _, game := range gamesToDiscover {
+		if useAllCampaigns && activeGamesCount >= a.config.Watch.MaxCampaigns {
+			break
+		}
+
 		a.logger.Debug("discovering live streams for game", slog.String("game", game))
 		streamers, err := client.GetLiveStreams(ctx, game, 3)
 		if err != nil {
 			a.logger.Warn("discover game streams failed", slog.String("game", game), slog.String("error", err.Error()))
 			continue
 		}
+
+		hasOnlineStream := false
 		for _, s := range streamers {
 			if !seen[s.Login] {
 				seen[s.Login] = true
 				combined = append(combined, s)
+				hasOnlineStream = true
 			}
+		}
+		if hasOnlineStream {
+			activeGamesCount++
 		}
 	}
 	return combined, nil
@@ -568,7 +613,9 @@ func (a *App) pollOnlineStatus(ctx context.Context, eng *engine.Engine, client *
 }
 
 func (a *App) runMinuteWatched(ctx context.Context, eng *engine.Engine, gqlClient gql.Client) {
-	gqlClient.ClientID = "kimne78kx3ncx6brgo4mv6wki5h1ko"
+	// Use the same Client ID and auth token as the rest of the app.
+	// The Browser Client ID requires Client-Integrity tokens that we don't
+	// generate, so we use the Android App Client ID which works without them.
 	fetcher := playback.TokenFetcher{Client: gqlClient}
 	watcher := playback.NewWatcher(fetcher)
 

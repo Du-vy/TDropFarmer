@@ -15,9 +15,9 @@ import (
 func TestEngineReschedule(t *testing.T) {
 	cfg := config.Config{
 		Watch: config.WatchConfig{
-			MaxChannels: 1,
-			Priorities:  []string{"order"},
-			TickSeconds: 1,
+			Priorities:   []string{"order"},
+			TickSeconds:  1,
+			MaxCampaigns: 3,
 		},
 	}
 	resolved := []domain.Streamer{
@@ -34,9 +34,9 @@ func TestEngineReschedule(t *testing.T) {
 func TestEngineSendEventStreak(t *testing.T) {
 	cfg := config.Config{
 		Watch: config.WatchConfig{
-			MaxChannels: 1,
-			Priorities:  []string{"streak", "order"},
-			TickSeconds: 5,
+			Priorities:   []string{"streak", "order"},
+			TickSeconds:  5,
+			MaxCampaigns: 3,
 		},
 	}
 	resolved := []domain.Streamer{

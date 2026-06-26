@@ -18,11 +18,11 @@ func Validate(cfg Config) error {
 	if cfg.Auth.ClientID == "" {
 		errs = append(errs, fmt.Errorf("auth.client_id must be set"))
 	}
-	if cfg.Watch.MaxChannels < 1 || cfg.Watch.MaxChannels > 2 {
-		errs = append(errs, fmt.Errorf("watch.max_channels must be between 1 and 2"))
-	}
 	if cfg.Watch.TickSeconds < 5 {
 		errs = append(errs, fmt.Errorf("watch.tick_seconds must be at least 5"))
+	}
+	if cfg.Watch.MaxCampaigns < 1 {
+		errs = append(errs, fmt.Errorf("watch.max_campaigns must be at least 1"))
 	}
 
 	for _, priority := range cfg.Watch.Priorities {

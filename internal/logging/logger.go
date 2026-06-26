@@ -180,21 +180,36 @@ func (c *ConsoleHandler) Handle(_ context.Context, r slog.Record) error {
 		login := attrs["login"]
 		game := attrs["game"]
 		title := attrs["title"]
+		isStatic, _ := attrs["is_static"].(bool)
 		if game == nil || game == "" {
 			game = "unknown"
 		}
 		if title == nil || title == "" {
 			title = "no title"
 		}
-		formattedMsg = fmt.Sprintf("▶ \033[32m\033[1mWatching\033[0m \033[36m%v\033[0m playing \033[33m%v\033[0m \033[90m(%v)\033[0m", login, game, title)
+		tag := "\033[33m[🎯 CAMPAIGN]\033[0m"
+		if isStatic {
+			tag = "\033[35m[📌 STATIC]\033[0m"
+		}
+		formattedMsg = fmt.Sprintf("%s ▶ \033[32m\033[1mWatching\033[0m \033[36m%v\033[0m playing \033[33m%v\033[0m \033[90m(%v)\033[0m", tag, login, game, title)
 
 	case "stop watching":
 		login := attrs["login"]
-		formattedMsg = fmt.Sprintf("■ \033[31m\033[1mStopped watching\033[0m \033[36m%v\033[0m", login)
+		isStatic, _ := attrs["is_static"].(bool)
+		tag := "\033[33m[🎯 CAMPAIGN]\033[0m"
+		if isStatic {
+			tag = "\033[35m[📌 STATIC]\033[0m"
+		}
+		formattedMsg = fmt.Sprintf("%s ■ \033[31m\033[1mStopped watching\033[0m \033[36m%v\033[0m", tag, login)
 
 	case "streamer online status updated":
 		streamer := attrs["streamer"]
 		onlineVal, _ := attrs["online"].(bool)
+		isStatic, _ := attrs["is_static"].(bool)
+		tag := "\033[33m[🎯 CAMPAIGN]\033[0m"
+		if isStatic {
+			tag = "\033[35m[📌 STATIC]\033[0m"
+		}
 		if onlineVal {
 			game := attrs["game"]
 			title := attrs["title"]
@@ -202,15 +217,15 @@ func (c *ConsoleHandler) Handle(_ context.Context, r slog.Record) error {
 			titleStr, _ := title.(string)
 			if gameStr != "" {
 				if titleStr != "" {
-					formattedMsg = fmt.Sprintf("🟢 \033[36m%v\033[0m went \033[32mONLINE\033[0m playing \033[33m%v\033[0m \033[90m(%v)\033[0m", streamer, gameStr, titleStr)
+					formattedMsg = fmt.Sprintf("%s 🟢 \033[36m%v\033[0m went \033[32mONLINE\033[0m playing \033[33m%v\033[0m \033[90m(%v)\033[0m", tag, streamer, gameStr, titleStr)
 				} else {
-					formattedMsg = fmt.Sprintf("🟢 \033[36m%v\033[0m went \033[32mONLINE\033[0m playing \033[33m%v\033[0m", streamer, gameStr)
+					formattedMsg = fmt.Sprintf("%s 🟢 \033[36m%v\033[0m went \033[32mONLINE\033[0m playing \033[33m%v\033[0m", tag, streamer, gameStr)
 				}
 			} else {
-				formattedMsg = fmt.Sprintf("🟢 \033[36m%v\033[0m went \033[32mONLINE\033[0m", streamer)
+				formattedMsg = fmt.Sprintf("%s 🟢 \033[36m%v\033[0m went \033[32mONLINE\033[0m", tag, streamer)
 			}
 		} else {
-			formattedMsg = fmt.Sprintf("🔴 \033[36m%v\033[0m went \033[31mOFFLINE\033[0m", streamer)
+			formattedMsg = fmt.Sprintf("%s 🔴 \033[36m%v\033[0m went \033[31mOFFLINE\033[0m", tag, streamer)
 		}
 
 	case "points updated":

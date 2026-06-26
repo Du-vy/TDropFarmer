@@ -21,11 +21,12 @@ type AuthConfig struct {
 }
 
 type WatchConfig struct {
-	MaxChannels  int      `json:"max_channels"`
-	Priorities   []string `json:"priorities"`
-	TickSeconds  int      `json:"tick_seconds"`
-	Games        []string `json:"games"`
-	AllCampaigns bool     `json:"all_campaigns"`
+	Priorities         []string `json:"priorities"`
+	TickSeconds        int      `json:"tick_seconds"`
+	Games              []string `json:"games"`
+	AllCampaigns       bool     `json:"all_campaigns"`
+	AutoStartCampaigns bool     `json:"auto_start_campaigns"`
+	MaxCampaigns       int      `json:"max_campaigns"`
 }
 
 type FeatureConfig struct {

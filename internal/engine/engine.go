@@ -20,9 +20,9 @@ type Engine struct {
 	streamers []StreamerState
 	logger    *slog.Logger
 
-	priorities  []priorityLevel
-	maxChannels int
-	tickSeconds int
+	priorities   []priorityLevel
+	maxCampaigns int
+	tickSeconds  int
 
 	activeMu sync.Mutex
 	active   []StreamerState
@@ -77,14 +77,14 @@ func New(cfg config.Config, resolved []domain.Streamer, logger *slog.Logger, opt
 	states = applyConfigOverrides(states, cfg.Streamers)
 
 	engine := &Engine{
-		config:      cfg,
-		streamers:   states,
-		logger:      logger,
-		priorities:  parsePriorities(cfg.Watch.Priorities),
-		maxChannels: cfg.Watch.MaxChannels,
-		tickSeconds: cfg.Watch.TickSeconds,
-		events:      make(chan Event, 32),
-		eventsOut:   make(chan Event, 32),
+		config:       cfg,
+		streamers:    states,
+		logger:       logger,
+		priorities:   parsePriorities(cfg.Watch.Priorities),
+		maxCampaigns: cfg.Watch.MaxCampaigns,
+		tickSeconds:  cfg.Watch.TickSeconds,
+		events:       make(chan Event, 1024),
+		eventsOut:    make(chan Event, 1024),
 	}
 	for _, opt := range opts {
 		opt(engine)
@@ -119,7 +119,7 @@ func (e *Engine) Run(ctx context.Context) error {
 
 	e.logger.Info("engine started",
 		slog.Int("streamers", len(e.streamers)),
-		slog.Int("max_channels", e.maxChannels),
+		slog.Int("max_campaigns", e.maxCampaigns),
 		slog.Int("tick_seconds", e.tickSeconds),
 	)
 
@@ -142,7 +142,7 @@ func (e *Engine) Run(ctx context.Context) error {
 }
 
 func (e *Engine) reschedule() {
-	active := selectActive(e.priorities, e.streamers, e.activeGames, e.config.Features.ClaimDropsEnabled(), e.maxChannels)
+	active := selectActive(e.priorities, e.streamers, e.activeGames, e.config.Features.ClaimDropsEnabled(), e.maxCampaigns)
 
 	previous := e.activeSnapshot()
 	added, removed := diffSnapshots(previous, active)
@@ -154,6 +154,7 @@ func (e *Engine) reschedule() {
 			slog.String("channel_id", state.ChannelID),
 			slog.String("game", state.GameName),
 			slog.String("title", state.Title),
+			slog.Bool("is_static", state.IsStatic),
 		)
 		e.emit(Event{
 			Type:      EventOnline,
@@ -166,6 +167,7 @@ func (e *Engine) reschedule() {
 		e.logger.Info("stop watching",
 			slog.String("login", state.Login),
 			slog.String("channel_id", state.ChannelID),
+			slog.Bool("is_static", state.IsStatic),
 		)
 		e.emit(Event{
 			Type:      EventOffline,
@@ -248,12 +250,17 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 				slog.Bool("online", true),
 				slog.String("game", e.streamers[i].GameName),
 				slog.String("title", e.streamers[i].Title),
+				slog.Bool("is_static", state.IsStatic),
 			)
 			e.reschedule()
 		case EventOffline:
 			e.streamers[i].Online = false
 			e.streamers[i].StreakReady = false
-			e.logger.Info("streamer online status updated", slog.String("streamer", state.Login), slog.Bool("online", false))
+			e.logger.Info("streamer online status updated",
+				slog.String("streamer", state.Login),
+				slog.Bool("online", false),
+				slog.Bool("is_static", state.IsStatic),
+			)
 			e.reschedule()
 		case EventStreak:
 			e.streamers[i].StreakReady = true

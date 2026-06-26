@@ -33,8 +33,8 @@ func TestDefaultsAndNormalize(t *testing.T) {
 	if cfg.Streamers[0].Login != "streamer_one" {
 		t.Fatalf("streamer login = %q, want normalized login", cfg.Streamers[0].Login)
 	}
-	if cfg.Watch.MaxChannels != 2 {
-		t.Fatalf("max channels = %d, want 2", cfg.Watch.MaxChannels)
+	if cfg.Watch.MaxCampaigns != 3 {
+		t.Fatalf("max campaigns = %d, want 3", cfg.Watch.MaxCampaigns)
 	}
 	if !cfg.Features.ClaimBonusesEnabled() {
 		t.Fatalf("claim bonuses default should be enabled")
@@ -56,8 +56,8 @@ func TestAuthFallbackDefaults(t *testing.T) {
 		t.Fatalf("Validate failed with default TV auth credentials: %v", err)
 	}
 
-	if cfg.Auth.ClientID != "ue6666qo983tsx6so1t0vnawi233wa" {
-		t.Fatalf("expected ClientID 'ue6666qo983tsx6so1t0vnawi233wa', got %q", cfg.Auth.ClientID)
+	if cfg.Auth.ClientID != "kd1unb4b3q4t58fwlpcbzcbnm76a8fp" {
+		t.Fatalf("expected ClientID 'kd1unb4b3q4t58fwlpcbzcbnm76a8fp', got %q", cfg.Auth.ClientID)
 	}
 
 	if len(cfg.Auth.Scopes) == 0 {

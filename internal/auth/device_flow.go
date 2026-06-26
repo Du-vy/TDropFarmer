@@ -112,6 +112,9 @@ func (f DeviceFlow) ValidToken(ctx context.Context) (store.Token, ValidateResult
 	if err != nil {
 		return store.Token{}, ValidateResult{}, err
 	}
+	if f.ClientID != "" && validation.ClientID != f.ClientID {
+		return store.Token{}, ValidateResult{}, fmt.Errorf("token client ID mismatch: token belongs to %s, config requires %s", validation.ClientID, f.ClientID)
+	}
 	return token, validation, nil
 }
 

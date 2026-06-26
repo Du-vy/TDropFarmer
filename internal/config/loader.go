@@ -29,7 +29,7 @@ func Load(path string) (Config, error) {
 
 func ApplyDefaults(cfg *Config) {
 	if cfg.Auth.ClientID == "" {
-		cfg.Auth.ClientID = "ue6666qo983tsx6so1t0vnawi233wa"
+		cfg.Auth.ClientID = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp"
 	}
 	if len(cfg.Auth.Scopes) == 0 {
 		cfg.Auth.Scopes = []string{
@@ -42,14 +42,14 @@ func ApplyDefaults(cfg *Config) {
 		}
 	}
 
-	if cfg.Watch.MaxChannels == 0 {
-		cfg.Watch.MaxChannels = 2
-	}
 	if len(cfg.Watch.Priorities) == 0 {
 		cfg.Watch.Priorities = []string{"streak", "order"}
 	}
 	if cfg.Watch.TickSeconds == 0 {
 		cfg.Watch.TickSeconds = 20
+	}
+	if cfg.Watch.MaxCampaigns == 0 {
+		cfg.Watch.MaxCampaigns = 3
 	}
 
 	if cfg.Features.ClaimBonuses == nil {

@@ -16,10 +16,20 @@ import (
 	"github.com/Du-vy/TDropFarmer/internal/twitch/gql"
 )
 
+var usherBaseURL = "https://usher.ttvnw.net/api/channel/hls"
 const (
-	playbackAccessTokenOp   = "PlaybackAccessToken"
-	playbackAccessTokenHash = "ed230aa1e33e07eebb8928504583da78a5173989fadfb1ac94be06a04f3cdbe9"
-	usherBaseURL            = "https://usher.ttvnw.net/api/channel/hls"
+
+	// Raw GQL query instead of persisted query hash.
+	// Persisted query hashes get rotated by Twitch periodically; using the
+	// raw query string avoids breakage when hashes change.
+	// Only live stream tokens are needed, so VOD-related variables are omitted.
+	playbackAccessTokenQuery = `query PlaybackAccessToken($login: String!, $playerType: String!) {
+  streamPlaybackAccessToken(channelName: $login, params: {platform: "web", playerBackend: "mediaplayer", playerType: $playerType}) {
+    value
+    signature
+    __typename
+  }
+}`
 )
 
 var (
@@ -43,33 +53,26 @@ type AccessToken struct {
 
 func (f TokenFetcher) Fetch(ctx context.Context, channelLogin string) (AccessToken, error) {
 	response, err := f.Client.Do(ctx, gql.Request{
-		OperationName: playbackAccessTokenOp,
+		Query: playbackAccessTokenQuery,
 		Variables: map[string]any{
 			"login":      channelLogin,
-			"isLive":     true,
-			"isVod":      false,
-			"vodID":      "",
-			"platform":   "web",
 			"playerType": "site",
 		},
-		Extensions: persistedQuery(playbackAccessTokenHash),
 	})
 	if err != nil {
 		return AccessToken{}, err
 	}
 
 	var result struct {
-		Data struct {
-			StreamPlaybackAccessToken struct {
-				Signature string `json:"signature"`
-				Value     string `json:"value"`
-			} `json:"streamPlaybackAccessToken"`
-		} `json:"data"`
+		StreamPlaybackAccessToken struct {
+			Signature string `json:"signature"`
+			Value     string `json:"value"`
+		} `json:"streamPlaybackAccessToken"`
 	}
 	if err := json.Unmarshal(response.Data, &result); err != nil {
 		return AccessToken{}, fmt.Errorf("decode playback access token: %w", err)
 	}
-	token := result.Data.StreamPlaybackAccessToken
+	token := result.StreamPlaybackAccessToken
 	if token.Signature == "" || token.Value == "" {
 		return AccessToken{}, errMissingToken
 	}
@@ -110,22 +113,65 @@ func (w *Watcher) SendMinuteWatched(ctx context.Context, streamer domain.Streame
 		return fmt.Errorf("get stream qualities: %w", err)
 	}
 	qualityLines := nonEmptyLines(qualities)
-	if len(qualityLines) == 0 {
+	// Find the lowest quality playlist URL (skip any lines starting with #)
+	var lowQualityURL string
+	for i := len(qualityLines) - 1; i >= 0; i-- {
+		line := qualityLines[i]
+		if !strings.HasPrefix(line, "#") {
+			lowQualityURL = line
+			break
+		}
+	}
+	if lowQualityURL == "" {
 		return errNoStream
 	}
-	lowQualityURL := qualityLines[len(qualityLines)-1]
 
-	mediaPlaylist, err := w.httpGet(ctx, lowQualityURL)
+	// Parse usherURL to resolve relative quality playlist URLs
+	usherBase, err := url.Parse(usherURL)
+	if err != nil {
+		return fmt.Errorf("parse usher URL: %w", err)
+	}
+
+	// Resolve relative quality URL if necessary
+	uq, err := url.Parse(lowQualityURL)
+	if err != nil {
+		return fmt.Errorf("parse quality URL: %w", err)
+	}
+	resolvedLowQualityURL := usherBase.ResolveReference(uq).String()
+
+	mediaPlaylist, err := w.httpGet(ctx, resolvedLowQualityURL)
 	if err != nil {
 		return fmt.Errorf("get media segments: %w", err)
 	}
 	mediaLines := nonEmptyLines(mediaPlaylist)
-	if len(mediaLines) < 2 {
+
+	// Parse base URL for resolving relative segment URLs
+	base, err := url.Parse(resolvedLowQualityURL)
+	if err != nil {
+		return fmt.Errorf("parse base URL: %w", err)
+	}
+
+	// Find the latest media segment URL (skip any lines starting with #)
+	var segmentURL string
+	for i := len(mediaLines) - 1; i >= 0; i-- {
+		line := mediaLines[i]
+		if !strings.HasPrefix(line, "#") {
+			segmentURL = line
+			break
+		}
+	}
+	if segmentURL == "" {
 		return errNoMedia
 	}
-	segmentURL := mediaLines[len(mediaLines)-2]
 
-	if err := w.httpHead(ctx, segmentURL); err != nil {
+	// Resolve relative URLs if necessary
+	u, err := url.Parse(segmentURL)
+	if err != nil {
+		return fmt.Errorf("parse segment URL: %w", err)
+	}
+	resolvedURL := base.ResolveReference(u).String()
+
+	if err := w.httpHead(ctx, resolvedURL); err != nil {
 		return fmt.Errorf("head media segment: %w", err)
 	}
 
@@ -220,13 +266,4 @@ func nonEmptyLines(text string) []string {
 
 func userAgent() string {
 	return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-}
-
-func persistedQuery(hash string) map[string]any {
-	return map[string]any{
-		"persistedQuery": map[string]any{
-			"version":    1,
-			"sha256Hash": hash,
-		},
-	}
 }
