@@ -30,6 +30,11 @@ func Validate(cfg Config) error {
 			errs = append(errs, fmt.Errorf("watch.priorities contains unsupported value %q", priority))
 		}
 	}
+	for i, game := range cfg.Watch.Games {
+		if strings.TrimSpace(game) == "" {
+			errs = append(errs, fmt.Errorf("watch.games[%d] must not be empty", i))
+		}
+	}
 
 
 

@@ -24,6 +24,7 @@ type WatchConfig struct {
 	MaxChannels int      `json:"max_channels"`
 	Priorities  []string `json:"priorities"`
 	TickSeconds int      `json:"tick_seconds"`
+	Games       []string `json:"games"`
 }
 
 type FeatureConfig struct {

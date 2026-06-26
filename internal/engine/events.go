@@ -14,6 +14,7 @@ const (
 	EventBonusClaimed     EventType = "bonus_claimed"
 	EventDropClaimed      EventType = "drop_claimed"
 	EventChatMention      EventType = "chat_mention"
+	EventUpdateStreamers  EventType = "update_streamers"
 )
 
 type Event struct {

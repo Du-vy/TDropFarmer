@@ -184,6 +184,16 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		slog.String("streamer", event.Streamer),
 	)
 
+	if event.Type == EventUpdateStreamers {
+		resolved, ok := event.Payload.([]domain.Streamer)
+		if ok {
+			e.handleUpdateStreamers(resolved)
+		} else {
+			e.logger.Warn("update streamers event has unsupported payload type")
+		}
+		return
+	}
+
 	if event.Type == EventBonusAvailable {
 		e.handleBonusAvailable(ctx, event)
 		return
@@ -202,6 +212,15 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 			continue
 		}
 		switch event.Type {
+		case EventOnline:
+			e.streamers[i].Online = true
+			e.logger.Info("streamer online status updated", slog.String("streamer", state.Login), slog.Bool("online", true))
+			e.reschedule()
+		case EventOffline:
+			e.streamers[i].Online = false
+			e.streamers[i].StreakReady = false
+			e.logger.Info("streamer online status updated", slog.String("streamer", state.Login), slog.Bool("online", false))
+			e.reschedule()
 		case EventStreak:
 			e.streamers[i].StreakReady = true
 			e.logger.Info("streak ready", slog.String("streamer", state.Login))
@@ -228,6 +247,36 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		}
 		break
 	}
+}
+
+func (e *Engine) handleUpdateStreamers(resolved []domain.Streamer) {
+	// Create lookup of existing states by login to preserve points/streak/online
+	existing := make(map[string]StreamerState, len(e.streamers))
+	for _, state := range e.streamers {
+		existing[state.Login] = state
+	}
+
+	states := make([]StreamerState, 0, len(resolved))
+	for i, streamer := range resolved {
+		if state, ok := existing[streamer.Login]; ok {
+			state.Priority = i
+			states = append(states, state)
+		} else {
+			states = append(states, StreamerState{
+				Login:       streamer.Login,
+				ChannelID:   streamer.ID,
+				DisplayName: streamer.DisplayName,
+				Priority:    i,
+				Online:      true, // Initialized to true since discovered as live
+			})
+		}
+	}
+
+	states = applyConfigOverrides(states, e.config.Streamers)
+
+	e.streamers = states
+	e.logger.Info("engine candidate streamers updated", slog.Int("count", len(e.streamers)))
+	e.reschedule()
 }
 
 func (e *Engine) handleBonusAvailable(ctx context.Context, event Event) {

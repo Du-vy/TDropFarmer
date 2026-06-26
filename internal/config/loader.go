@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 )
 
 func Load(path string) (Config, error) {
@@ -82,5 +83,8 @@ func Normalize(cfg *Config) {
 	cfg.Account.Username = normalizeLogin(cfg.Account.Username)
 	for i := range cfg.Streamers {
 		cfg.Streamers[i].Login = normalizeLogin(cfg.Streamers[i].Login)
+	}
+	for i := range cfg.Watch.Games {
+		cfg.Watch.Games[i] = strings.TrimSpace(cfg.Watch.Games[i])
 	}
 }

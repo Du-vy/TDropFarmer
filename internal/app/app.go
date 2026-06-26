@@ -18,17 +18,21 @@ import (
 	"github.com/Du-vy/TDropFarmer/internal/twitch"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/channelpoints"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/chat"
+	"github.com/Du-vy/TDropFarmer/internal/twitch/discovery"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/gql"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/inventory"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/playback"
 )
 
 type App struct {
-	config      config.Config
-	logger      *slog.Logger
-	tokenStore  auth.TokenStore
-	chatMu      sync.Mutex
-	chatCancels map[string]context.CancelFunc
+	config           config.Config
+	logger           *slog.Logger
+	tokenStore       auth.TokenStore
+	chatMu           sync.Mutex
+	chatCancels      map[string]context.CancelFunc
+	streamersMu      sync.RWMutex
+	staticStreamers  []domain.Streamer
+	dynamicStreamers []domain.Streamer
 }
 
 func New(cfg config.Config, logger *slog.Logger, tokenStore auth.TokenStore) *App {
@@ -96,19 +100,33 @@ func (a *App) Run(ctx context.Context) error {
 		)
 	}
 
+	a.staticStreamers = streamers
+
 	gqlClient := gql.Client{
 		ClientID:    a.config.Auth.ClientID,
 		AccessToken: token.AccessToken,
 	}
 
+	if len(a.config.Watch.Games) > 0 {
+		discClient := discovery.Client{Client: gqlClient}
+		a.logger.Info("performing initial games discovery")
+		discovered, err := a.discoverGamesStreamers(ctx, discClient)
+		if err != nil {
+			a.logger.Warn("initial games discovery failed", slog.String("error", err.Error()))
+		} else {
+			a.dynamicStreamers = discovered
+			a.logger.Info("discovered dynamic streamers", slog.Int("count", len(discovered)))
+		}
+	}
+
+	combinedStreamers := a.getCombinedStreamers()
 	contextLoader := channelpoints.ContextLoader{Client: gqlClient}
 	initialEvents := a.loadChannelPointEvents(ctx, contextLoader, streamers)
 
-	eng := engine.New(a.config, streamers, a.logger,
+	eng := engine.New(a.config, combinedStreamers, a.logger,
 		engine.WithPointRecorder(store.NewStateStore(a.config.Storage.Path)),
 		engine.WithBonusClaimer(channelpoints.GraphQLBonusClaimer{Client: gqlClient}),
 	)
-
 
 	for _, event := range initialEvents {
 		eng.SendEvent(event)
@@ -119,20 +137,28 @@ func (a *App) Run(ctx context.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		a.pollOnlineStatus(ctx, eng, &helixClient, streamers)
+		a.pollOnlineStatus(ctx, eng, &helixClient)
 	}()
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		a.pollChannelPoints(ctx, eng, contextLoader, streamers)
+		a.pollChannelPoints(ctx, eng, contextLoader)
 	}()
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		a.runMinuteWatched(ctx, eng, gqlClient, streamers)
+		a.runMinuteWatched(ctx, eng, gqlClient)
 	}()
+
+	if len(a.config.Watch.Games) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			a.pollGameStreams(ctx, eng, gqlClient)
+		}()
+	}
 
 
 
@@ -280,12 +306,115 @@ func (a *App) formatEventMessage(event engine.Event) string {
 	return ""
 }
 
-func (a *App) pollOnlineStatus(ctx context.Context, eng *engine.Engine, client *twitch.Client, streamers []domain.Streamer) {
-	userIDs := make([]string, 0, len(streamers))
-	for _, s := range streamers {
-		userIDs = append(userIDs, s.ID)
+func (a *App) getCombinedStreamers() []domain.Streamer {
+	a.streamersMu.RLock()
+	defer a.streamersMu.RUnlock()
+	combined := make([]domain.Streamer, 0, len(a.staticStreamers)+len(a.dynamicStreamers))
+	combined = append(combined, a.staticStreamers...)
+	combined = append(combined, a.dynamicStreamers...)
+	return combined
+}
+
+func (a *App) getStreamersToPoll(eng *engine.Engine) []domain.Streamer {
+	a.streamersMu.RLock()
+	defer a.streamersMu.RUnlock()
+
+	polled := make([]domain.Streamer, 0, len(a.staticStreamers))
+	polled = append(polled, a.staticStreamers...)
+
+	activeLogins := eng.ActiveStreamers()
+	activeMap := make(map[string]bool, len(activeLogins))
+	for _, login := range activeLogins {
+		activeMap[login] = true
 	}
 
+	for _, s := range a.dynamicStreamers {
+		if activeMap[s.Login] {
+			polled = append(polled, s)
+		}
+	}
+
+	return polled
+}
+
+func (a *App) findCombinedStreamer(login string) *domain.Streamer {
+	a.streamersMu.RLock()
+	defer a.streamersMu.RUnlock()
+	for i := range a.staticStreamers {
+		if a.staticStreamers[i].Login == login {
+			return &a.staticStreamers[i]
+		}
+	}
+	for i := range a.dynamicStreamers {
+		if a.dynamicStreamers[i].Login == login {
+			return &a.dynamicStreamers[i]
+		}
+	}
+	return nil
+}
+
+func (a *App) discoverGamesStreamers(ctx context.Context, client discovery.Client) ([]domain.Streamer, error) {
+	var combined []domain.Streamer
+	seen := make(map[string]bool)
+
+	a.streamersMu.RLock()
+	for _, s := range a.staticStreamers {
+		seen[s.Login] = true
+	}
+	a.streamersMu.RUnlock()
+
+	for _, game := range a.config.Watch.Games {
+		a.logger.Debug("discovering live streams for game", slog.String("game", game))
+		streamers, err := client.GetLiveStreams(ctx, game, 3)
+		if err != nil {
+			a.logger.Warn("discover game streams failed", slog.String("game", game), slog.String("error", err.Error()))
+			continue
+		}
+		for _, s := range streamers {
+			if !seen[s.Login] {
+				seen[s.Login] = true
+				combined = append(combined, s)
+			}
+		}
+	}
+	return combined, nil
+}
+
+func (a *App) pollGameStreams(ctx context.Context, eng *engine.Engine, gqlClient gql.Client) {
+	discClient := discovery.Client{Client: gqlClient}
+	interval := 5 * time.Minute
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.logger.Info("polling games discovery")
+			discovered, err := a.discoverGamesStreamers(ctx, discClient)
+			if err != nil {
+				a.logger.Warn("games discovery failed", slog.String("error", err.Error()))
+				continue
+			}
+
+			a.streamersMu.Lock()
+			a.dynamicStreamers = discovered
+			a.streamersMu.Unlock()
+
+			a.logger.Info("games discovery completed", slog.Int("count", len(discovered)))
+
+			combined := a.getCombinedStreamers()
+			eng.SendEvent(engine.Event{
+				Type:    engine.EventUpdateStreamers,
+				Payload: combined,
+				Time:    time.Now().UTC(),
+			})
+		}
+	}
+}
+
+func (a *App) pollOnlineStatus(ctx context.Context, eng *engine.Engine, client *twitch.Client) {
 	interval := 60 * time.Second
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -297,15 +426,34 @@ func (a *App) pollOnlineStatus(ctx context.Context, eng *engine.Engine, client *
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			streams, err := client.GetStreams(ctx, userIDs)
-			if err != nil {
-				a.logger.Warn("check streams failed", slog.String("error", err.Error()))
+			streamers := a.getCombinedStreamers()
+			if len(streamers) == 0 {
 				continue
 			}
+			userIDs := make([]string, 0, len(streamers))
+			for _, s := range streamers {
+				userIDs = append(userIDs, s.ID)
+			}
+
+			var streams []twitch.StreamInfo
+			for start := 0; start < len(userIDs); start += 100 {
+				end := start + 100
+				if end > len(userIDs) {
+					end = len(userIDs)
+				}
+				batch, err := client.GetStreams(ctx, userIDs[start:end])
+				if err != nil {
+					a.logger.Warn("check streams batch failed", slog.String("error", err.Error()))
+					break
+				}
+				streams = append(streams, batch...)
+			}
+
 			currentOnline := make(map[string]bool)
 			for _, stream := range streams {
 				currentOnline[stream.UserLogin] = true
 			}
+
 			for _, s := range streamers {
 				wasOnline := online[s.Login]
 				isOnline := currentOnline[s.Login]
@@ -334,7 +482,7 @@ func (a *App) pollOnlineStatus(ctx context.Context, eng *engine.Engine, client *
 	}
 }
 
-func (a *App) runMinuteWatched(ctx context.Context, eng *engine.Engine, gqlClient gql.Client, streamers []domain.Streamer) {
+func (a *App) runMinuteWatched(ctx context.Context, eng *engine.Engine, gqlClient gql.Client) {
 	fetcher := playback.TokenFetcher{Client: gqlClient}
 	watcher := playback.NewWatcher(fetcher)
 
@@ -348,7 +496,7 @@ func (a *App) runMinuteWatched(ctx context.Context, eng *engine.Engine, gqlClien
 		case <-ticker.C:
 			active := eng.ActiveStreamers()
 			for _, login := range active {
-				s := findStreamer(streamers, login)
+				s := a.findCombinedStreamer(login)
 				if s == nil {
 					continue
 				}
@@ -363,7 +511,7 @@ func (a *App) runMinuteWatched(ctx context.Context, eng *engine.Engine, gqlClien
 	}
 }
 
-func (a *App) pollChannelPoints(ctx context.Context, eng *engine.Engine, loader channelpoints.ContextLoader, streamers []domain.Streamer) {
+func (a *App) pollChannelPoints(ctx context.Context, eng *engine.Engine, loader channelpoints.ContextLoader) {
 	interval := time.Duration(a.config.Watch.TickSeconds) * time.Second
 	if interval < time.Minute {
 		interval = time.Minute
@@ -376,6 +524,7 @@ func (a *App) pollChannelPoints(ctx context.Context, eng *engine.Engine, loader 
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			streamers := a.getStreamersToPoll(eng)
 			for _, event := range a.loadChannelPointEvents(ctx, loader, streamers) {
 				eng.SendEvent(event)
 			}
@@ -410,15 +559,6 @@ func (a *App) loadChannelPointEvents(ctx context.Context, loader channelpoints.C
 		}
 	}
 	return events
-}
-
-func findStreamer(streamers []domain.Streamer, login string) *domain.Streamer {
-	for i := range streamers {
-		if streamers[i].Login == login {
-			return &streamers[i]
-		}
-	}
-	return nil
 }
 
 func streamerLogins(streamers []config.StreamerConfig) []string {

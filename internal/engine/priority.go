@@ -62,7 +62,14 @@ func byPriority(prefs []priorityLevel, a, b StreamerState) bool {
 }
 
 func selectActive(prefs []priorityLevel, states []StreamerState, maxChannels int) []StreamerState {
-	ranked := rankStreamers(prefs, states)
+	var onlineStates []StreamerState
+	for _, state := range states {
+		if state.Online {
+			onlineStates = append(onlineStates, state)
+		}
+	}
+
+	ranked := rankStreamers(prefs, onlineStates)
 	n := maxChannels
 	if n > len(ranked) {
 		n = len(ranked)

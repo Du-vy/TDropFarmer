@@ -5,7 +5,8 @@
   "watch": {
     "max_channels": 2,
     "priorities": ["streak", "order"],
-    "tick_seconds": 20
+    "tick_seconds": 20,
+    "games": ["Smite", "Destiny 2"]
   },
   "features": {
     "claim_bonuses": true,

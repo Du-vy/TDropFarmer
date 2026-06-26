@@ -62,9 +62,9 @@ func TestRankPointsDescending(t *testing.T) {
 
 func TestSelectActive(t *testing.T) {
 	states := []StreamerState{
-		{Login: "a", StreakReady: true, Priority: 0},
-		{Login: "b", StreakReady: false, Priority: 1},
-		{Login: "c", StreakReady: false, Priority: 2},
+		{Login: "a", StreakReady: true, Priority: 0, Online: true},
+		{Login: "b", StreakReady: false, Priority: 1, Online: true},
+		{Login: "c", StreakReady: false, Priority: 2, Online: true},
 	}
 	prefs := parsePriorities([]string{"streak", "order"})
 	active := selectActive(prefs, states, 2)
@@ -78,8 +78,8 @@ func TestSelectActive(t *testing.T) {
 
 func TestSelectActiveMaxOne(t *testing.T) {
 	states := []StreamerState{
-		{Login: "a", StreakReady: true},
-		{Login: "b", StreakReady: true},
+		{Login: "a", StreakReady: true, Online: true},
+		{Login: "b", StreakReady: true, Online: true},
 	}
 	prefs := parsePriorities([]string{"streak", "order"})
 	active := selectActive(prefs, states, 1)
@@ -97,6 +97,24 @@ func TestSelectActiveStableSort(t *testing.T) {
 	ranked := rankStreamers(prefs, states)
 	if ranked[0].Login != "a" || ranked[1].Login != "b" {
 		t.Fatalf("ranked = %v, want [a b]", logins(ranked))
+	}
+}
+
+func TestSelectActiveFiltersOffline(t *testing.T) {
+	states := []StreamerState{
+		{Login: "a", Priority: 0, Online: false},
+		{Login: "b", Priority: 1, Online: true},
+		{Login: "c", Priority: 2, Online: false},
+		{Login: "d", Priority: 3, Online: true},
+	}
+	prefs := parsePriorities([]string{"order"})
+	active := selectActive(prefs, states, 3)
+	// Only 'b' and 'd' are online, so only they should be selected
+	if len(active) != 2 {
+		t.Fatalf("len = %d, want 2", len(active))
+	}
+	if active[0].Login != "b" || active[1].Login != "d" {
+		t.Fatalf("active = %v, want [b d]", logins(active))
 	}
 }
 
