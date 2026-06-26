@@ -6,7 +6,8 @@
     "max_channels": 2,
     "priorities": ["streak", "order"],
     "tick_seconds": 20,
-    "games": ["Smite", "Destiny 2"]
+    "games": ["Smite", "Destiny 2"],
+    "all_campaigns": false
   },
   "features": {
     "claim_bonuses": true,

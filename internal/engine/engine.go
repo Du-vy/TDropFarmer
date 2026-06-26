@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,6 +34,8 @@ type Engine struct {
 	pointRecorder     PointRecorder
 
 	cancelFunc context.CancelFunc
+
+	activeGames []string
 }
 
 type PointRecorder interface {
@@ -54,6 +57,11 @@ func WithPointRecorder(recorder PointRecorder) Option {
 }
 
 func New(cfg config.Config, resolved []domain.Streamer, logger *slog.Logger, opts ...Option) *Engine {
+	staticLogins := make(map[string]bool)
+	for _, s := range cfg.Streamers {
+		staticLogins[strings.ToLower(s.Login)] = true
+	}
+
 	states := make([]StreamerState, 0, len(resolved))
 	for i, streamer := range resolved {
 		states = append(states, StreamerState{
@@ -63,6 +71,7 @@ func New(cfg config.Config, resolved []domain.Streamer, logger *slog.Logger, opt
 			Priority:    i,
 			GameName:    streamer.GameName,
 			Title:       streamer.Title,
+			IsStatic:    staticLogins[strings.ToLower(streamer.Login)],
 		})
 	}
 	states = applyConfigOverrides(states, cfg.Streamers)
@@ -133,7 +142,7 @@ func (e *Engine) Run(ctx context.Context) error {
 }
 
 func (e *Engine) reschedule() {
-	active := selectActive(e.priorities, e.streamers, e.maxChannels)
+	active := selectActive(e.priorities, e.streamers, e.activeGames, e.config.Features.ClaimDropsEnabled(), e.maxChannels)
 
 	previous := e.activeSnapshot()
 	added, removed := diffSnapshots(previous, active)
@@ -195,6 +204,17 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 			e.handleUpdateStreamers(resolved)
 		} else {
 			e.logger.Warn("update streamers event has unsupported payload type")
+		}
+		return
+	}
+
+	if event.Type == EventActiveGames {
+		games, ok := event.Payload.([]string)
+		if ok {
+			e.activeGames = games
+			e.reschedule()
+		} else {
+			e.logger.Warn("active games event has unsupported payload type")
 		}
 		return
 	}
@@ -270,12 +290,19 @@ func (e *Engine) handleUpdateStreamers(resolved []domain.Streamer) {
 		existing[state.Login] = state
 	}
 
+	staticLogins := make(map[string]bool)
+	for _, s := range e.config.Streamers {
+		staticLogins[strings.ToLower(s.Login)] = true
+	}
+
 	states := make([]StreamerState, 0, len(resolved))
 	for i, streamer := range resolved {
+		isStatic := staticLogins[strings.ToLower(streamer.Login)]
 		if state, ok := existing[streamer.Login]; ok {
 			state.Priority = i
 			state.GameName = streamer.GameName
 			state.Title = streamer.Title
+			state.IsStatic = isStatic
 			states = append(states, state)
 		} else {
 			states = append(states, StreamerState{
@@ -286,6 +313,7 @@ func (e *Engine) handleUpdateStreamers(resolved []domain.Streamer) {
 				Online:      true, // Initialized to true since discovered as live
 				GameName:    streamer.GameName,
 				Title:       streamer.Title,
+				IsStatic:    isStatic,
 			})
 		}
 	}

@@ -33,6 +33,8 @@ type App struct {
 	streamersMu      sync.RWMutex
 	staticStreamers  []domain.Streamer
 	dynamicStreamers []domain.Streamer
+	activeGamesMu    sync.RWMutex
+	activeGames      []string
 }
 
 func New(cfg config.Config, logger *slog.Logger, tokenStore auth.TokenStore) *App {
@@ -113,7 +115,33 @@ func (a *App) Run(ctx context.Context) error {
 		AccessToken: token.AccessToken,
 	}
 
-	if len(a.config.Watch.Games) > 0 {
+	// Load initial active games from inventory if drops are enabled
+	var initialActiveGames []string
+	if a.config.Features.ClaimDropsEnabled() {
+		inventoryClient := inventory.Client{Client: gqlClient}
+		drops, err := inventoryClient.GetInventory(ctx)
+		if err != nil {
+			a.logger.Warn("initial inventory fetch failed", slog.String("error", err.Error()))
+		} else {
+			activeGamesMap := make(map[string]bool)
+			for _, drop := range drops {
+				if !drop.IsClaimed && drop.GameName != "" {
+					activeGamesMap[drop.GameName] = true
+				}
+			}
+			for game := range activeGamesMap {
+				initialActiveGames = append(initialActiveGames, game)
+			}
+			a.activeGamesMu.Lock()
+			a.activeGames = initialActiveGames
+			a.activeGamesMu.Unlock()
+		}
+	}
+
+	hasGamesConfigured := len(a.config.Watch.Games) > 0
+	useAllCampaigns := a.config.Watch.AllCampaigns && a.config.Features.ClaimDropsEnabled()
+
+	if hasGamesConfigured || useAllCampaigns {
 		discClient := discovery.Client{Client: gqlClient}
 		a.logger.Info("performing initial games discovery")
 		discovered, err := a.discoverGamesStreamers(ctx, discClient)
@@ -136,6 +164,14 @@ func (a *App) Run(ctx context.Context) error {
 
 	for _, event := range initialEvents {
 		eng.SendEvent(event)
+	}
+
+	if len(initialActiveGames) > 0 {
+		eng.SendEvent(engine.Event{
+			Type:    engine.EventActiveGames,
+			Payload: initialActiveGames,
+			Time:    time.Now().UTC(),
+		})
 	}
 
 	var wg sync.WaitGroup
@@ -243,6 +279,7 @@ func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invCli
 		return
 	}
 
+	activeGamesMap := make(map[string]bool)
 	for _, drop := range drops {
 		if !drop.IsClaimed {
 			campaign := drop.CampaignName
@@ -255,6 +292,9 @@ func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invCli
 				slog.Int("current", drop.CurrentMinutes),
 				slog.Int("required", drop.RequiredMinutes),
 			)
+			if drop.GameName != "" {
+				activeGamesMap[drop.GameName] = true
+			}
 		}
 
 		if drop.IsClaimable {
@@ -300,6 +340,21 @@ func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invCli
 			}
 		}
 	}
+
+	var activeGames []string
+	for game := range activeGamesMap {
+		activeGames = append(activeGames, game)
+	}
+
+	a.activeGamesMu.Lock()
+	a.activeGames = activeGames
+	a.activeGamesMu.Unlock()
+
+	eng.SendEvent(engine.Event{
+		Type:    engine.EventActiveGames,
+		Payload: activeGames,
+		Time:    time.Now().UTC(),
+	})
 }
 
 func (a *App) formatEventMessage(event engine.Event) string {
@@ -382,7 +437,18 @@ func (a *App) discoverGamesStreamers(ctx context.Context, client discovery.Clien
 	}
 	a.streamersMu.RUnlock()
 
-	for _, game := range a.config.Watch.Games {
+	var gamesToDiscover []string
+	useAllCampaigns := a.config.Watch.AllCampaigns && a.config.Features.ClaimDropsEnabled()
+	if useAllCampaigns {
+		a.activeGamesMu.RLock()
+		gamesToDiscover = make([]string, len(a.activeGames))
+		copy(gamesToDiscover, a.activeGames)
+		a.activeGamesMu.RUnlock()
+	} else {
+		gamesToDiscover = a.config.Watch.Games
+	}
+
+	for _, game := range gamesToDiscover {
 		a.logger.Debug("discovering live streams for game", slog.String("game", game))
 		streamers, err := client.GetLiveStreams(ctx, game, 3)
 		if err != nil {

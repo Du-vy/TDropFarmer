@@ -24,6 +24,11 @@ func TestGetInventory(t *testing.T) {
 		{
 			"id": "campaign-1",
 			"name": "Campaign 1",
+			"game": {
+				"id": "game-1",
+				"name": "Game 1",
+				"slug": "game-1"
+			},
 			"timeBasedDrops": [
 				{
 					"id": "drop-1",
@@ -67,11 +72,11 @@ func TestGetInventory(t *testing.T) {
 		t.Fatalf("expected 2 drops, got %d", len(drops))
 	}
 
-	if drops[0].ID != "drop-1" || drops[0].CurrentMinutes != 45 || drops[0].IsClaimable {
+	if drops[0].ID != "drop-1" || drops[0].CurrentMinutes != 45 || drops[0].IsClaimable || drops[0].GameName != "Game 1" {
 		t.Errorf("drop 0 incorrect: %+v", drops[0])
 	}
 
-	if drops[1].ID != "drop-2" || drops[1].CurrentMinutes != 60 || !drops[1].IsClaimable || drops[1].DropInstanceID != "instance-2" {
+	if drops[1].ID != "drop-2" || drops[1].CurrentMinutes != 60 || !drops[1].IsClaimable || drops[1].DropInstanceID != "instance-2" || drops[1].GameName != "Game 1" {
 		t.Errorf("drop 1 incorrect: %+v", drops[1])
 	}
 }

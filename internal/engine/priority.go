@@ -3,6 +3,7 @@ package engine
 import (
 	"slices"
 	"sort"
+	"strings"
 )
 
 type Priority string
@@ -61,20 +62,66 @@ func byPriority(prefs []priorityLevel, a, b StreamerState) bool {
 	return false
 }
 
-func selectActive(prefs []priorityLevel, states []StreamerState, maxChannels int) []StreamerState {
-	var onlineStates []StreamerState
+func selectActive(prefs []priorityLevel, states []StreamerState, activeGames []string, filterByActiveGames bool, maxChannels int) []StreamerState {
+	var selected []StreamerState
+
+	// 1. Select all static online channels
 	for _, state := range states {
-		if state.Online {
-			onlineStates = append(onlineStates, state)
+		if state.IsStatic && state.Online {
+			selected = append(selected, state)
 		}
 	}
 
-	ranked := rankStreamers(prefs, onlineStates)
-	n := maxChannels
-	if n > len(ranked) {
-		n = len(ranked)
+	// If we've already reached or exceeded maxChannels, return the top maxChannels static streams
+	if len(selected) >= maxChannels {
+		rankedStatic := rankStreamers(prefs, selected)
+		return rankedStatic[:maxChannels]
 	}
-	return ranked[:n]
+
+	// 2. Identify dynamic online channels
+	var dynamicOnline []StreamerState
+	for _, state := range states {
+		if !state.IsStatic && state.Online {
+			if filterByActiveGames {
+				isActiveGame := false
+				for _, ag := range activeGames {
+					if strings.EqualFold(state.GameName, ag) {
+						isActiveGame = true
+						break
+					}
+				}
+				if !isActiveGame {
+					continue
+				}
+			}
+			dynamicOnline = append(dynamicOnline, state)
+		}
+	}
+
+	// 3. Group dynamic online by game and select the top ranked for each game
+	gameGroups := make(map[string][]StreamerState)
+	for _, state := range dynamicOnline {
+		key := strings.ToLower(state.GameName)
+		gameGroups[key] = append(gameGroups[key], state)
+	}
+
+	var bestDynamicPerGame []StreamerState
+	for _, groupStates := range gameGroups {
+		rankedGroup := rankStreamers(prefs, groupStates)
+		bestDynamicPerGame = append(bestDynamicPerGame, rankedGroup[0])
+	}
+
+	// 4. Rank the best unique campaign/game dynamic streams
+	rankedDynamic := rankStreamers(prefs, bestDynamicPerGame)
+
+	// 5. Fill remaining capacity with top dynamic channels
+	remainingCapacity := maxChannels - len(selected)
+	if remainingCapacity > len(rankedDynamic) {
+		remainingCapacity = len(rankedDynamic)
+	}
+
+	selected = append(selected, rankedDynamic[:remainingCapacity]...)
+	return selected
 }
 
 type snapshot struct {

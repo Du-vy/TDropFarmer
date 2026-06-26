@@ -15,6 +15,7 @@ const (
 	EventDropClaimed      EventType = "drop_claimed"
 	EventChatMention      EventType = "chat_mention"
 	EventUpdateStreamers  EventType = "update_streamers"
+	EventActiveGames      EventType = "active_games"
 )
 
 type Event struct {
@@ -36,4 +37,5 @@ type StreamerState struct {
 	Priority    int
 	GameName    string
 	Title       string
+	IsStatic    bool
 }

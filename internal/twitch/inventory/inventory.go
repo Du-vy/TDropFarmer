@@ -29,6 +29,7 @@ type Drop struct {
 	Name            string
 	CampaignID      string
 	CampaignName    string
+	GameName        string
 	RequiredMinutes int
 	CurrentMinutes  int
 	DropInstanceID  string
@@ -76,6 +77,7 @@ func (c Client) GetInventory(ctx context.Context) ([]Drop, error) {
 				Name:            td.Name,
 				CampaignID:      campaign.ID,
 				CampaignName:    campaign.Name,
+				GameName:        campaign.Game.Name,
 				RequiredMinutes: td.RequiredMinutesWatched,
 				CurrentMinutes:  td.Self.CurrentMinutesWatched,
 				DropInstanceID:  dropInstanceID,
@@ -143,8 +145,13 @@ type inventoryResponse struct {
 	CurrentUser *struct {
 		Inventory struct {
 			DropCampaignsInProgress []struct {
-				ID             string `json:"id"`
-				Name           string `json:"name"`
+				ID   string `json:"id"`
+				Name string `json:"name"`
+				Game struct {
+					ID   string `json:"id"`
+					Name string `json:"name"`
+					Slug string `json:"slug"`
+				} `json:"game"`
 				TimeBasedDrops []struct {
 					ID                     string `json:"id"`
 					Name                   string `json:"name"`
