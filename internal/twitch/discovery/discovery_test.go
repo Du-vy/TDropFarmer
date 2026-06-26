@@ -83,7 +83,7 @@ func TestGetLiveStreams(t *testing.T) {
 	}
 
 	expected := []domain.Streamer{
-		{ID: "999", Login: "streamer1", DisplayName: "StreamerOne"},
+		{ID: "999", Login: "streamer1", DisplayName: "StreamerOne", BroadcastID: "12345"},
 	}
 	if !reflect.DeepEqual(streamers, expected) {
 		t.Errorf("got %v, want %v", streamers, expected)

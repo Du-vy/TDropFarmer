@@ -35,6 +35,7 @@ type App struct {
 	dynamicStreamers []domain.Streamer
 	activeGamesMu    sync.RWMutex
 	activeGames      []string
+	userID           string
 }
 
 func New(cfg config.Config, logger *slog.Logger, tokenStore auth.TokenStore) *App {
@@ -90,6 +91,7 @@ func (a *App) Run(ctx context.Context) error {
 		slog.String("user_id", validation.UserID),
 		slog.Int("expires_in", validation.ExpiresIn),
 	)
+	a.userID = validation.UserID
 
 	helixClient := twitch.Client{
 		ClientID:    a.config.Auth.ClientID,
@@ -584,10 +586,35 @@ func (a *App) pollOnlineStatus(ctx context.Context, eng *engine.Engine, client *
 				currentOnline[stream.UserLogin] = stream
 			}
 
+			a.streamersMu.Lock()
 			for _, s := range streamers {
 				wasOnline := online[s.Login]
 				streamInfo, isOnline := currentOnline[s.Login]
 				online[s.Login] = isOnline
+
+				// Update BroadcastID inside protected slices
+				for i := range a.staticStreamers {
+					if a.staticStreamers[i].Login == s.Login {
+						if isOnline {
+							a.staticStreamers[i].BroadcastID = streamInfo.ID
+							a.staticStreamers[i].GameName = streamInfo.GameName
+							a.staticStreamers[i].Title = streamInfo.Title
+						} else {
+							a.staticStreamers[i].BroadcastID = ""
+						}
+					}
+				}
+				for i := range a.dynamicStreamers {
+					if a.dynamicStreamers[i].Login == s.Login {
+						if isOnline {
+							a.dynamicStreamers[i].BroadcastID = streamInfo.ID
+							a.dynamicStreamers[i].GameName = streamInfo.GameName
+							a.dynamicStreamers[i].Title = streamInfo.Title
+						} else {
+							a.dynamicStreamers[i].BroadcastID = ""
+						}
+					}
+				}
 
 				if isOnline && !wasOnline {
 					eng.SendEvent(engine.Event{
@@ -608,6 +635,7 @@ func (a *App) pollOnlineStatus(ctx context.Context, eng *engine.Engine, client *
 					})
 				}
 			}
+			a.streamersMu.Unlock()
 		}
 	}
 }
@@ -638,7 +666,7 @@ func (a *App) runMinuteWatched(ctx context.Context, eng *engine.Engine, gqlClien
 				if s == nil {
 					continue
 				}
-				if err := watcher.SendMinuteWatched(ctx, *s); err != nil {
+				if err := watcher.SendMinuteWatched(ctx, *s, a.userID); err != nil {
 					a.logger.Warn("minute watched failed",
 						slog.String("streamer", login),
 						slog.String("error", err.Error()),

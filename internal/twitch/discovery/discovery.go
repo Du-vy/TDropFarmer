@@ -104,6 +104,7 @@ func (c Client) GetLiveStreams(ctx context.Context, gameName string, limit int) 
 			DisplayName: edge.Node.Broadcaster.DisplayName,
 			GameName:    gameName,
 			Title:       edge.Node.Title,
+			BroadcastID: edge.Node.ID,
 		})
 	}
 

@@ -102,9 +102,10 @@ func TestWatcher_SendMinuteWatched(t *testing.T) {
 	watcher := NewWatcher(fetcher)
 	watcher.spadeURL = server.URL + "/track"
 	err := watcher.SendMinuteWatched(context.Background(), domain.Streamer{
-		Login: "test_channel",
-		ID:    "12345",
-	})
+		Login:       "test_channel",
+		ID:          "12345",
+		BroadcastID: "987654321",
+	}, "user_id_123")
 	if err != nil {
 		t.Fatalf("SendMinuteWatched failed: %v", err)
 	}

@@ -8,4 +8,5 @@ type Streamer struct {
 	ProfileURL  string
 	GameName    string
 	Title       string
+	BroadcastID string
 }

@@ -103,7 +103,7 @@ func (w *Watcher) SetSpadeURL(spadeURL string) {
 	w.spadeURL = spadeURL
 }
 
-func (w *Watcher) SendMinuteWatched(ctx context.Context, streamer domain.Streamer) error {
+func (w *Watcher) SendMinuteWatched(ctx context.Context, streamer domain.Streamer, userID string) error {
 	token, err := w.fetcher.Fetch(ctx, streamer.Login)
 	if err != nil {
 		return fmt.Errorf("fetch playback token: %w", err)
@@ -178,7 +178,7 @@ func (w *Watcher) SendMinuteWatched(ctx context.Context, streamer domain.Streame
 	}
 
 	if w.spadeURL != "" {
-		payload := encodeSpadePayload(streamer.ID)
+		payload := encodeSpadePayload(streamer, userID)
 		if err := w.httpPostForm(ctx, w.spadeURL, payload); err != nil {
 			return fmt.Errorf("post spade event: %w", err)
 		}
@@ -240,14 +240,21 @@ func (w *Watcher) httpPostForm(ctx context.Context, target string, data []byte) 
 	return nil
 }
 
-func encodeSpadePayload(channelID string) []byte {
+func encodeSpadePayload(streamer domain.Streamer, userID string) []byte {
 	payload := []map[string]any{
 		{
 			"event": "minute-watched",
 			"properties": map[string]any{
-				"channel_id": channelID,
-				"player":     "site",
-				"live":       true,
+				"broadcast_id": streamer.BroadcastID,
+				"channel_id":   streamer.ID,
+				"channel":      streamer.Login,
+				"hidden":       false,
+				"live":         true,
+				"location":     "channel",
+				"logged_in":    true,
+				"muted":        false,
+				"player":       "site",
+				"user_id":      userID,
 			},
 		},
 	}
