@@ -7,6 +7,8 @@ type EventType string
 const (
 	EventOnline           EventType = "online"
 	EventOffline          EventType = "offline"
+	EventWatchStart       EventType = "watch_start"
+	EventWatchStop        EventType = "watch_stop"
 	EventPoints           EventType = "points"
 	EventBalance          EventType = "balance"
 	EventStreak           EventType = "streak"

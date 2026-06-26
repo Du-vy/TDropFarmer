@@ -219,12 +219,12 @@ func (a *App) Run(ctx context.Context) error {
 				slog.String("streamer", event.Streamer),
 			)
 
-			if event.Type == engine.EventOnline {
+			if event.Type == engine.EventWatchStart {
 				if a.shouldJoinChat(event.Streamer) {
 					a.startChat(ctx, eng, event.Streamer, token.AccessToken)
 				}
 			}
-			if event.Type == engine.EventOffline {
+			if event.Type == engine.EventWatchStop {
 				a.stopChat(event.Streamer)
 			}
 
@@ -350,10 +350,10 @@ func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invCli
 
 func (a *App) formatEventMessage(event engine.Event) string {
 	switch event.Type {
-	case engine.EventOnline:
-		return fmt.Sprintf("🟢 Streamer **%s** is now ONLINE!", event.Streamer)
-	case engine.EventOffline:
-		return fmt.Sprintf("🔴 Streamer **%s** is now OFFLINE!", event.Streamer)
+	case engine.EventWatchStart:
+		return fmt.Sprintf("▶ Started watching **%s**", event.Streamer)
+	case engine.EventWatchStop:
+		return fmt.Sprintf("■ Stopped watching **%s**", event.Streamer)
 	case engine.EventBonusClaimed:
 		if res, ok := event.Payload.(channelpoints.ClaimResult); ok {
 			return fmt.Sprintf("💰 Claimed community bonus of **%d** points from **%s**!", res.Points, res.StreamerLogin)
@@ -782,11 +782,26 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 	var priorityInProgress []string
 	var otherInProgress []string
 	inProgressMap := make(map[string]bool)
+	addedInProgress := make(map[string]bool)
+
+	// Keep track of games that have drops and games that have unclaimed drops
+	hasAnyDrops := make(map[string]bool)
+	hasUnclaimed := make(map[string]bool)
+
+	for _, drop := range drops {
+		if drop.GameName != "" {
+			inProgressMap[drop.GameName] = true
+			hasAnyDrops[strings.ToLower(drop.GameName)] = true
+			if !drop.IsClaimed {
+				hasUnclaimed[strings.ToLower(drop.GameName)] = true
+			}
+		}
+	}
 
 	for _, drop := range drops {
 		if drop.IsEarnable && drop.GameName != "" {
-			if !inProgressMap[drop.GameName] {
-				inProgressMap[drop.GameName] = true
+			if !addedInProgress[drop.GameName] {
+				addedInProgress[drop.GameName] = true
 				if a.isPriorityGame(drop.GameName) {
 					priorityInProgress = append(priorityInProgress, drop.GameName)
 				} else {
@@ -830,6 +845,12 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 		sortedGames = append(sortedGames, priorityInProgress...)
 		sortedGames = append(sortedGames, priorityAvailable...)
 		for _, pg := range a.config.Watch.PriorityGames {
+			// Skip priority games that are already fully completed (have drops, but none are unclaimed)
+			pgKey := strings.ToLower(pg)
+			if hasAnyDrops[pgKey] && !hasUnclaimed[pgKey] {
+				continue
+			}
+
 			found := false
 			for _, g := range sortedGames {
 				if strings.EqualFold(g, pg) {

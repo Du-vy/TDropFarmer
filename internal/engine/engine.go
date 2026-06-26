@@ -155,7 +155,7 @@ func (e *Engine) reschedule() {
 			slog.Int64("points", state.Points),
 		)
 		e.emit(Event{
-			Type:      EventOnline,
+			Type:      EventWatchStart,
 			Streamer:  state.Login,
 			ChannelID: state.ChannelID,
 			Time:      now,
@@ -168,7 +168,7 @@ func (e *Engine) reschedule() {
 			slog.Bool("is_static", state.IsStatic),
 		)
 		e.emit(Event{
-			Type:      EventOffline,
+			Type:      EventWatchStop,
 			Streamer:  state.Login,
 			ChannelID: state.ChannelID,
 			Time:      now,

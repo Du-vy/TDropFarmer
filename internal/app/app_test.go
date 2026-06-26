@@ -16,22 +16,22 @@ func TestFormatEventMessage(t *testing.T) {
 		config: config.Config{},
 	}
 
-	// Test EventOnline
+	// Test EventWatchStart
 	msg := app.formatEventMessage(engine.Event{
-		Type:     engine.EventOnline,
+		Type:     engine.EventWatchStart,
 		Streamer: "streamer1",
 	})
-	expected := "🟢 Streamer **streamer1** is now ONLINE!"
+	expected := "▶ Started watching **streamer1**"
 	if msg != expected {
 		t.Errorf("expected %q, got %q", expected, msg)
 	}
 
-	// Test EventOffline
+	// Test EventWatchStop
 	msg = app.formatEventMessage(engine.Event{
-		Type:     engine.EventOffline,
+		Type:     engine.EventWatchStop,
 		Streamer: "streamer1",
 	})
-	expected = "🔴 Streamer **streamer1** is now OFFLINE!"
+	expected = "■ Stopped watching **streamer1**"
 	if msg != expected {
 		t.Errorf("expected %q, got %q", expected, msg)
 	}
@@ -143,6 +143,28 @@ func TestSortActiveGames(t *testing.T) {
 	// Expected Order:
 	// Only Priority games (in progress first, then available, then remaining configured):
 	// "Corepunk", "Overwatch"
+	expected = []string{"Corepunk", "Overwatch"}
+	if len(sorted) != len(expected) {
+		t.Fatalf("expected len %d, got %d (sorted = %v)", len(expected), len(sorted), sorted)
+	}
+	for i, game := range expected {
+		if sorted[i] != game {
+			t.Errorf("at index %d: expected %q, got %q", i, game, sorted[i])
+		}
+	}
+
+	// 3. Case where a priority game is fully completed (has drops, but all are claimed)
+	app.config.Watch.PriorityGames = []string{"Corepunk", "Overwatch", "THE FINALS"}
+	app.config.Watch.FallbackAllCampaigns = false
+	drops = []inventory.Drop{
+		// Game: THE FINALS (Priority, but fully claimed/completed)
+		{GameName: "THE FINALS", IsEarnable: false, IsClaimed: true},
+		// Game: Corepunk (Priority, in progress and earnable)
+		{GameName: "Corepunk", IsEarnable: true, IsClaimed: false},
+	}
+	sorted = app.sortActiveGames(context.Background(), invClient, drops)
+	// Expected: "Corepunk" (in progress) and "Overwatch" (available).
+	// "THE FINALS" should be excluded because all of its drops are claimed/completed.
 	expected = []string{"Corepunk", "Overwatch"}
 	if len(sorted) != len(expected) {
 		t.Fatalf("expected len %d, got %d (sorted = %v)", len(expected), len(sorted), sorted)
