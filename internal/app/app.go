@@ -502,6 +502,7 @@ func (a *App) pollOnlineStatus(ctx context.Context, eng *engine.Engine, client *
 }
 
 func (a *App) runMinuteWatched(ctx context.Context, eng *engine.Engine, gqlClient gql.Client) {
+	gqlClient.ClientID = "kimne78kx3ncx6brgo4mv6wki5h1ko"
 	fetcher := playback.TokenFetcher{Client: gqlClient}
 	watcher := playback.NewWatcher(fetcher)
 

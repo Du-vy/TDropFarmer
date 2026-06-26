@@ -149,6 +149,20 @@ func (c *ConsoleHandler) Enabled(_ context.Context, level slog.Level) bool {
 func (c *ConsoleHandler) Handle(_ context.Context, r slog.Record) error {
 	timeStr := r.Time.Format("15:04:05")
 
+	var levelStr string
+	switch r.Level {
+	case slog.LevelDebug:
+		levelStr = "\033[90m[DEBUG]\033[0m"
+	case slog.LevelInfo:
+		levelStr = "\033[32m\033[1m[INFO]\033[0m"
+	case slog.LevelWarn:
+		levelStr = "\033[33m\033[1m[WARN]\033[0m"
+	case slog.LevelError:
+		levelStr = "\033[31m\033[1m[ERROR]\033[0m"
+	default:
+		levelStr = fmt.Sprintf("[%s]", r.Level)
+	}
+
 	// Pre-extract attributes for custom rendering
 	attrs := make(map[string]any)
 	for _, attr := range c.attrs {
@@ -182,7 +196,19 @@ func (c *ConsoleHandler) Handle(_ context.Context, r slog.Record) error {
 		streamer := attrs["streamer"]
 		onlineVal, _ := attrs["online"].(bool)
 		if onlineVal {
-			formattedMsg = fmt.Sprintf("🟢 \033[36m%v\033[0m went \033[32mONLINE\033[0m", streamer)
+			game := attrs["game"]
+			title := attrs["title"]
+			gameStr, _ := game.(string)
+			titleStr, _ := title.(string)
+			if gameStr != "" {
+				if titleStr != "" {
+					formattedMsg = fmt.Sprintf("🟢 \033[36m%v\033[0m went \033[32mONLINE\033[0m playing \033[33m%v\033[0m \033[90m(%v)\033[0m", streamer, gameStr, titleStr)
+				} else {
+					formattedMsg = fmt.Sprintf("🟢 \033[36m%v\033[0m went \033[32mONLINE\033[0m playing \033[33m%v\033[0m", streamer, gameStr)
+				}
+			} else {
+				formattedMsg = fmt.Sprintf("🟢 \033[36m%v\033[0m went \033[32mONLINE\033[0m", streamer)
+			}
 		} else {
 			formattedMsg = fmt.Sprintf("🔴 \033[36m%v\033[0m went \033[31mOFFLINE\033[0m", streamer)
 		}
@@ -219,22 +245,8 @@ func (c *ConsoleHandler) Handle(_ context.Context, r slog.Record) error {
 	}
 
 	if formattedMsg != "" {
-		fmt.Fprintf(c.writer, "\033[90m%s\033[0m %s\n", timeStr, formattedMsg)
+		fmt.Fprintf(c.writer, "\033[90m%s\033[0m %s %s\n", timeStr, levelStr, formattedMsg)
 		return nil
-	}
-
-	var levelStr string
-	switch r.Level {
-	case slog.LevelDebug:
-		levelStr = "\033[90m[DEBUG]\033[0m"
-	case slog.LevelInfo:
-		levelStr = "\033[32m\033[1m[INFO]\033[0m"
-	case slog.LevelWarn:
-		levelStr = "\033[33m\033[1m[WARN]\033[0m"
-	case slog.LevelError:
-		levelStr = "\033[31m\033[1m[ERROR]\033[0m"
-	default:
-		levelStr = fmt.Sprintf("[%s]", r.Level)
 	}
 
 	var attrsBuilder strings.Builder

@@ -223,7 +223,12 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 				e.streamers[i].GameName = info.GameName
 				e.streamers[i].Title = info.Title
 			}
-			e.logger.Info("streamer online status updated", slog.String("streamer", state.Login), slog.Bool("online", true))
+			e.logger.Info("streamer online status updated",
+				slog.String("streamer", state.Login),
+				slog.Bool("online", true),
+				slog.String("game", e.streamers[i].GameName),
+				slog.String("title", e.streamers[i].Title),
+			)
 			e.reschedule()
 		case EventOffline:
 			e.streamers[i].Online = false
