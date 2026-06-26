@@ -15,7 +15,6 @@ import (
 func TestEngineReschedule(t *testing.T) {
 	cfg := config.Config{
 		Watch: config.WatchConfig{
-			Priorities:  []string{"order"},
 			TickSeconds: 1,
 		},
 	}
@@ -33,7 +32,6 @@ func TestEngineReschedule(t *testing.T) {
 func TestEngineSendEventStreak(t *testing.T) {
 	cfg := config.Config{
 		Watch: config.WatchConfig{
-			Priorities:  []string{"streak", "order"},
 			TickSeconds: 5,
 		},
 	}

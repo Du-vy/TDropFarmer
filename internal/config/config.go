@@ -21,7 +21,6 @@ type AuthConfig struct {
 }
 
 type WatchConfig struct {
-	Priorities           []string `json:"priorities"`
 	TickSeconds          int      `json:"tick_seconds"`
 	PriorityGames        []string `json:"priority_games"`
 	FallbackAllCampaigns bool     `json:"fallback_all_campaigns"`
@@ -39,7 +38,6 @@ func (f FeatureConfig) ClaimBonusesEnabled() bool { return boolDefault(f.ClaimBo
 func (f FeatureConfig) ClaimDropsEnabled() bool   { return boolDefault(f.ClaimDrops, false) }
 func (f FeatureConfig) DryRunEnabled() bool       { return boolDefault(f.DryRun, false) }
 func (f FeatureConfig) ChatEnabled() bool         { return boolDefault(f.Chat, false) }
-
 
 type StreamerConfig struct {
 	Login      string `json:"login"`

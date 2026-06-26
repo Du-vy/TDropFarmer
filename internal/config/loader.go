@@ -42,9 +42,6 @@ func ApplyDefaults(cfg *Config) {
 		}
 	}
 
-	if len(cfg.Watch.Priorities) == 0 {
-		cfg.Watch.Priorities = []string{"streak", "order"}
-	}
 	if cfg.Watch.TickSeconds == 0 {
 		cfg.Watch.TickSeconds = 20
 	}

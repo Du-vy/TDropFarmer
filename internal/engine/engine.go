@@ -20,8 +20,7 @@ type Engine struct {
 	streamers []StreamerState
 	logger    *slog.Logger
 
-	priorities   []priorityLevel
-	tickSeconds  int
+	tickSeconds int
 
 	activeMu sync.Mutex
 	active   []StreamerState
@@ -29,8 +28,8 @@ type Engine struct {
 	events    chan Event
 	eventsOut chan Event
 
-	bonusClaimer      channelpoints.BonusClaimer
-	pointRecorder     PointRecorder
+	bonusClaimer  channelpoints.BonusClaimer
+	pointRecorder PointRecorder
 
 	cancelFunc context.CancelFunc
 
@@ -79,7 +78,6 @@ func New(cfg config.Config, resolved []domain.Streamer, logger *slog.Logger, opt
 		config:      cfg,
 		streamers:   states,
 		logger:      logger,
-		priorities:  parsePriorities(cfg.Watch.Priorities),
 		tickSeconds: cfg.Watch.TickSeconds,
 		events:      make(chan Event, 1024),
 		eventsOut:   make(chan Event, 1024),
@@ -139,7 +137,7 @@ func (e *Engine) Run(ctx context.Context) error {
 }
 
 func (e *Engine) reschedule() {
-	active := selectActive(e.priorities, e.streamers, e.activeGames, e.config.Features.ClaimDropsEnabled())
+	active := selectActive(e.streamers, e.activeGames, e.config.Features.ClaimDropsEnabled())
 
 	previous := e.activeSnapshot()
 	added, removed := diffSnapshots(previous, active)

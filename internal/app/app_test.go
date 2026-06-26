@@ -50,7 +50,6 @@ func TestFormatEventMessage(t *testing.T) {
 		t.Errorf("expected %q, got %q", expected, msg)
 	}
 
-
 	// Test EventDropClaimed
 	msg = app.formatEventMessage(engine.Event{
 		Type:     engine.EventDropClaimed,
@@ -78,11 +77,19 @@ func TestFormatEventMessage(t *testing.T) {
 }
 
 type mockInventoryGQLClient struct {
-	response []byte
+	dashboardResponse []byte
+	detailResponses   map[string][]byte
 }
 
 func (m mockInventoryGQLClient) Do(ctx context.Context, req gql.Request) (gql.Response, error) {
-	return gql.Response{Data: m.response}, nil
+	if req.OperationName == "ViewerDropsDashboard" {
+		return gql.Response{Data: m.dashboardResponse}, nil
+	}
+	if req.OperationName == "DropCampaignDetails" {
+		id, _ := req.Variables["dropID"].(string)
+		return gql.Response{Data: m.detailResponses[id]}, nil
+	}
+	return gql.Response{}, nil
 }
 
 func TestSortActiveGames(t *testing.T) {
@@ -103,15 +110,54 @@ func TestSortActiveGames(t *testing.T) {
 	mockCampaignsJSON := `{
 		"currentUser": {
 			"dropCampaigns": [
-				{"status": "ACTIVE", "game": {"displayName": "Overwatch"}},
-				{"status": "ACTIVE", "game": {"displayName": "THE FINALS"}},
-				{"status": "ACTIVE", "game": {"displayName": "Minecraft"}}
+				{"id": "overwatch", "status": "ACTIVE", "game": {"displayName": "Overwatch"}},
+				{"id": "the-finals", "status": "ACTIVE", "game": {"displayName": "THE FINALS"}},
+				{"id": "minecraft", "status": "ACTIVE", "game": {"displayName": "Minecraft"}},
+				{"id": "marvel", "status": "ACTIVE", "game": {"displayName": "Marvel Rivals"}}
 			]
 		}
 	}`
 
-	mockClient := mockInventoryGQLClient{response: []byte(mockCampaignsJSON)}
-	invClient := inventory.Client{Client: mockClient}
+	earnableDetail := func(id, game string) []byte {
+		return []byte(`{
+			"user": {
+				"dropCampaign": {
+					"id": "` + id + `",
+					"status": "ACTIVE",
+					"self": {"isAccountConnected": true},
+					"game": {"displayName": "` + game + `"},
+					"timeBasedDrops": [
+						{"requiredMinutesWatched": 60, "self": {"hasPreconditionsMet": true, "isClaimed": false}}
+					]
+				}
+			}
+		}`)
+	}
+	completedDetail := func(id, game string) []byte {
+		return []byte(`{
+			"user": {
+				"dropCampaign": {
+					"id": "` + id + `",
+					"status": "ACTIVE",
+					"self": {"isAccountConnected": true},
+					"game": {"displayName": "` + game + `"},
+					"timeBasedDrops": [
+						{"requiredMinutesWatched": 60, "self": {"hasPreconditionsMet": true, "isClaimed": true}}
+					]
+				}
+			}
+		}`)
+	}
+	mockClient := mockInventoryGQLClient{
+		dashboardResponse: []byte(mockCampaignsJSON),
+		detailResponses: map[string][]byte{
+			"overwatch":  earnableDetail("overwatch", "Overwatch"),
+			"the-finals": earnableDetail("the-finals", "THE FINALS"),
+			"minecraft":  earnableDetail("minecraft", "Minecraft"),
+			"marvel":     completedDetail("marvel", "Marvel Rivals"),
+		},
+	}
+	invClient := inventory.Client{Client: mockClient, UserID: "805921782"}
 
 	// 1. Case where FallbackAllCampaigns is true
 	drops := []inventory.Drop{

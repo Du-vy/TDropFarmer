@@ -19,6 +19,22 @@ func (c *recordingGQLClient) Do(ctx context.Context, req gql.Request) (gql.Respo
 	return c.response, c.err
 }
 
+type campaignGamesGQLClient struct {
+	dashboard []byte
+	details   map[string][]byte
+}
+
+func (c campaignGamesGQLClient) Do(ctx context.Context, req gql.Request) (gql.Response, error) {
+	if req.OperationName == viewerCampaignsOperation {
+		return gql.Response{Data: c.dashboard}, nil
+	}
+	if req.OperationName == campaignDetailsOperation {
+		id, _ := req.Variables["dropID"].(string)
+		return gql.Response{Data: c.details[id]}, nil
+	}
+	return gql.Response{}, nil
+}
+
 func TestGetInventory(t *testing.T) {
 	mockResponse := `{"currentUser":{"inventory":{"dropCampaignsInProgress":[
 		{
@@ -160,6 +176,61 @@ func TestClaimDropFailed(t *testing.T) {
 
 	if success {
 		t.Errorf("expected success to be false")
+	}
+}
+
+func TestGetActiveCampaignGamesSkipsCompletedCampaigns(t *testing.T) {
+	dashboard := []byte(`{
+		"currentUser": {
+			"dropCampaigns": [
+				{"id": "marvel", "status": "ACTIVE", "game": {"displayName": "Marvel Rivals"}},
+				{"id": "overwatch", "status": "ACTIVE", "game": {"displayName": "Overwatch"}}
+			]
+		}
+	}`)
+	completedMarvel := []byte(`{
+		"user": {"dropCampaign": {
+			"id": "marvel",
+			"status": "ACTIVE",
+			"self": {"isAccountConnected": true},
+			"game": {"displayName": "Marvel Rivals"},
+			"timeBasedDrops": [
+				{"requiredMinutesWatched": 60, "self": {"hasPreconditionsMet": true, "isClaimed": true}}
+			]
+		}}
+	}`)
+	earnableOverwatch := []byte(`{
+		"user": {"dropCampaign": {
+			"id": "overwatch",
+			"status": "ACTIVE",
+			"self": {"isAccountConnected": true},
+			"game": {"displayName": "Overwatch"},
+			"timeBasedDrops": [
+				{"requiredMinutesWatched": 60, "self": {"hasPreconditionsMet": true, "isClaimed": false}}
+			]
+		}}
+	}`)
+
+	client := campaignGamesGQLClient{
+		dashboard: dashboard,
+		details: map[string][]byte{
+			"marvel":    completedMarvel,
+			"overwatch": earnableOverwatch,
+		},
+	}
+	games, err := Client{Client: client, UserID: "805921782"}.GetActiveCampaignGames(context.Background())
+	if err != nil {
+		t.Fatalf("GetActiveCampaignGames returned error: %v", err)
+	}
+
+	expected := []string{"Overwatch"}
+	if len(games) != len(expected) {
+		t.Fatalf("expected %v, got %v", expected, games)
+	}
+	for i := range expected {
+		if games[i] != expected[i] {
+			t.Fatalf("expected %v, got %v", expected, games)
+		}
 	}
 }
 

@@ -121,7 +121,7 @@ func (a *App) Run(ctx context.Context) error {
 	// Load initial active games from inventory or active campaigns if drops are enabled
 	var initialActiveGames []string
 	if a.config.Features.ClaimDropsEnabled() {
-		inventoryClient := inventory.Client{Client: gqlClient}
+		inventoryClient := inventory.Client{Client: gqlClient, UserID: a.userID}
 		drops, errInv := inventoryClient.GetInventory(ctx)
 		if errInv != nil {
 			a.logger.Warn("initial inventory fetch failed", slog.String("error", errInv.Error()))
@@ -198,7 +198,7 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	if a.config.Features.ClaimDropsEnabled() {
-		inventoryClient := inventory.Client{Client: gqlClient}
+		inventoryClient := inventory.Client{Client: gqlClient, UserID: a.userID}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -777,6 +777,10 @@ func (a *App) isPriorityGame(gameName string) bool {
 	return false
 }
 
+func gameKey(gameName string) string {
+	return strings.ToLower(strings.TrimSpace(gameName))
+}
+
 func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, drops []inventory.Drop) []string {
 	// Categorize in-progress games
 	var priorityInProgress []string
@@ -790,18 +794,20 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 
 	for _, drop := range drops {
 		if drop.GameName != "" {
-			inProgressMap[drop.GameName] = true
-			hasAnyDrops[strings.ToLower(drop.GameName)] = true
+			key := gameKey(drop.GameName)
+			inProgressMap[key] = true
+			hasAnyDrops[key] = true
 			if !drop.IsClaimed {
-				hasUnclaimed[strings.ToLower(drop.GameName)] = true
+				hasUnclaimed[key] = true
 			}
 		}
 	}
 
 	for _, drop := range drops {
 		if drop.IsEarnable && drop.GameName != "" {
-			if !addedInProgress[drop.GameName] {
-				addedInProgress[drop.GameName] = true
+			key := gameKey(drop.GameName)
+			if !addedInProgress[key] {
+				addedInProgress[key] = true
 				if a.isPriorityGame(drop.GameName) {
 					priorityInProgress = append(priorityInProgress, drop.GameName)
 				} else {
@@ -821,7 +827,7 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 			a.logger.Warn("fetch active campaign games failed", slog.String("error", err.Error()))
 		} else {
 			for _, game := range availableCampaignGames {
-				if game == "" || inProgressMap[game] {
+				if game == "" || inProgressMap[gameKey(game)] {
 					continue
 				}
 				if a.isPriorityGame(game) {
@@ -846,7 +852,7 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 		sortedGames = append(sortedGames, priorityAvailable...)
 		for _, pg := range a.config.Watch.PriorityGames {
 			// Skip priority games that are already fully completed (have drops, but none are unclaimed)
-			pgKey := strings.ToLower(pg)
+			pgKey := gameKey(pg)
 			if hasAnyDrops[pgKey] && !hasUnclaimed[pgKey] {
 				continue
 			}

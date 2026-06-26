@@ -22,18 +22,11 @@ func Validate(cfg Config) error {
 		errs = append(errs, fmt.Errorf("watch.tick_seconds must be at least 5"))
 	}
 
-	for _, priority := range cfg.Watch.Priorities {
-		if !validPriority(priority) {
-			errs = append(errs, fmt.Errorf("watch.priorities contains unsupported value %q", priority))
-		}
-	}
 	for i, game := range cfg.Watch.PriorityGames {
 		if strings.TrimSpace(game) == "" {
 			errs = append(errs, fmt.Errorf("watch.priority_games[%d] must not be empty", i))
 		}
 	}
-
-
 
 	seen := make(map[string]struct{}, len(cfg.Streamers))
 	for i, streamer := range cfg.Streamers {
@@ -46,7 +39,6 @@ func Validate(cfg Config) error {
 			errs = append(errs, fmt.Errorf("%s.login duplicates %q", field, streamer.Login))
 		}
 		seen[streamer.Login] = struct{}{}
-
 
 	}
 
@@ -69,22 +61,12 @@ func Validate(cfg Config) error {
 	return errors.Join(errs...)
 }
 
-
 func normalizeLogin(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
 func validLogin(value string) bool {
 	return loginPattern.MatchString(value)
-}
-
-func validPriority(value string) bool {
-	switch value {
-	case "streak", "order", "points_ascending", "points_descending":
-		return true
-	default:
-		return false
-	}
 }
 
 func validLogLevel(value string) bool {
@@ -95,4 +77,3 @@ func validLogLevel(value string) bool {
 		return false
 	}
 }
-

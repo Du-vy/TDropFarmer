@@ -3,7 +3,6 @@
     "username": "my_twitch_user"
   },
   "watch": {
-    "priorities": ["streak", "order"],
     "tick_seconds": 20,
     "priority_games": ["Smite", "Destiny 2"],
     "fallback_all_campaigns": false,

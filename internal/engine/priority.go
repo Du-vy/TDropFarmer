@@ -6,63 +6,27 @@ import (
 	"strings"
 )
 
-type Priority string
-
-const (
-	PriorityStreak           Priority = "streak"
-	PriorityOrder            Priority = "order"
-	PriorityPointsAscending  Priority = "points_ascending"
-	PriorityPointsDescending Priority = "points_descending"
-)
-
-type priorityLevel struct {
-	kind Priority
-	rank int
-}
-
-func parsePriorities(values []string) []priorityLevel {
-	list := make([]priorityLevel, 0, len(values))
-	for i, value := range values {
-		list = append(list, priorityLevel{kind: Priority(value), rank: i})
-	}
-	return list
-}
-
-func rankStreamers(prefs []priorityLevel, states []StreamerState) []StreamerState {
+func rankStreamers(states []StreamerState) []StreamerState {
 	ordered := make([]StreamerState, len(states))
 	copy(ordered, states)
 
 	sort.SliceStable(ordered, func(i, j int) bool {
-		return byPriority(prefs, ordered[i], ordered[j])
+		return byStreamerRank(ordered[i], ordered[j])
 	})
 	return ordered
 }
 
-func byPriority(prefs []priorityLevel, a, b StreamerState) bool {
-	for _, pref := range prefs {
-		switch pref.kind {
-		case PriorityStreak:
-			if a.StreakReady != b.StreakReady {
-				return a.StreakReady
-			}
-		case PriorityPointsAscending:
-			if a.Points != b.Points {
-				return a.Points < b.Points
-			}
-		case PriorityPointsDescending:
-			if a.Points != b.Points {
-				return a.Points > b.Points
-			}
-		case PriorityOrder:
-			if a.Priority != b.Priority {
-				return a.Priority < b.Priority
-			}
-		}
+func byStreamerRank(a, b StreamerState) bool {
+	if a.StreakReady != b.StreakReady {
+		return a.StreakReady
+	}
+	if a.Priority != b.Priority {
+		return a.Priority < b.Priority
 	}
 	return false
 }
 
-func selectActive(prefs []priorityLevel, states []StreamerState, activeGames []string, filterByActiveGames bool) []StreamerState {
+func selectActive(states []StreamerState, activeGames []string, filterByActiveGames bool) []StreamerState {
 	var selected []StreamerState
 
 	// 1. Select all static online channels
@@ -95,18 +59,42 @@ func selectActive(prefs []priorityLevel, states []StreamerState, activeGames []s
 	// 3. Group dynamic online by game and select the top ranked for each game
 	gameGroups := make(map[string][]StreamerState)
 	for _, state := range dynamicOnline {
-		key := strings.ToLower(state.GameName)
+		key := gameKey(state.GameName)
 		gameGroups[key] = append(gameGroups[key], state)
 	}
 
 	var bestDynamicPerGame []StreamerState
-	for _, groupStates := range gameGroups {
-		rankedGroup := rankStreamers(prefs, groupStates)
-		bestDynamicPerGame = append(bestDynamicPerGame, rankedGroup[0])
+	if len(activeGames) > 0 {
+		seenGames := make(map[string]bool, len(activeGames))
+		for _, game := range activeGames {
+			key := gameKey(game)
+			groupStates := gameGroups[key]
+			if len(groupStates) == 0 {
+				continue
+			}
+			rankedGroup := rankStreamers(groupStates)
+			bestDynamicPerGame = append(bestDynamicPerGame, rankedGroup[0])
+			seenGames[key] = true
+		}
+		for key, groupStates := range gameGroups {
+			if seenGames[key] {
+				continue
+			}
+			rankedGroup := rankStreamers(groupStates)
+			bestDynamicPerGame = append(bestDynamicPerGame, rankedGroup[0])
+		}
+	} else {
+		for _, groupStates := range gameGroups {
+			rankedGroup := rankStreamers(groupStates)
+			bestDynamicPerGame = append(bestDynamicPerGame, rankedGroup[0])
+		}
 	}
 
-	// 4. Rank the best unique campaign/game dynamic streams
-	rankedDynamic := rankStreamers(prefs, bestDynamicPerGame)
+	// 4. Rank the best unique campaign/game dynamic streams when no game order is available.
+	rankedDynamic := bestDynamicPerGame
+	if len(activeGames) == 0 {
+		rankedDynamic = rankStreamers(bestDynamicPerGame)
+	}
 
 	// 5. Select up to 1 dynamic channel
 	limit := 1
@@ -116,6 +104,10 @@ func selectActive(prefs []priorityLevel, states []StreamerState, activeGames []s
 
 	selected = append(selected, rankedDynamic[:limit]...)
 	return selected
+}
+
+func gameKey(gameName string) string {
+	return strings.ToLower(strings.TrimSpace(gameName))
 }
 
 type snapshot struct {

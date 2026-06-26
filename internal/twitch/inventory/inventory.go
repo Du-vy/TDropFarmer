@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Du-vy/TDropFarmer/internal/twitch/gql"
@@ -18,6 +19,9 @@ const (
 
 	viewerCampaignsOperation = "ViewerDropsDashboard"
 	viewerCampaignsHash      = "5a4da2ab3d5b47c9f9ce864e727b2cb346af1e3ea8b897fe8f704a97ff017619"
+
+	campaignDetailsOperation = "DropCampaignDetails"
+	campaignDetailsHash      = "039277bf98f3130929262cc7c6efd9c141ca3749cb6dca442fc8ead9a53f77c1"
 )
 
 type GQLClient interface {
@@ -26,6 +30,7 @@ type GQLClient interface {
 
 type Client struct {
 	Client GQLClient
+	UserID string
 }
 
 type Drop struct {
@@ -236,9 +241,41 @@ type viewerCampaignsResponse struct {
 	} `json:"currentUser"`
 }
 
+type campaignDetailsResponse struct {
+	User *struct {
+		DropCampaign *struct {
+			ID      string `json:"id"`
+			Name    string `json:"name"`
+			Status  string `json:"status"`
+			StartAt string `json:"startAt"`
+			EndAt   string `json:"endAt"`
+			Self    struct {
+				IsAccountConnected bool `json:"isAccountConnected"`
+			} `json:"self"`
+			Game struct {
+				Name        string `json:"name"`
+				DisplayName string `json:"displayName"`
+			} `json:"game"`
+			TimeBasedDrops []struct {
+				ID                     string `json:"id"`
+				StartAt                string `json:"startAt"`
+				EndAt                  string `json:"endAt"`
+				RequiredMinutesWatched int    `json:"requiredMinutesWatched"`
+				Self                   struct {
+					HasPreconditionsMet *bool `json:"hasPreconditionsMet"`
+					IsClaimed           bool  `json:"isClaimed"`
+				} `json:"self"`
+			} `json:"timeBasedDrops"`
+		} `json:"dropCampaign"`
+	} `json:"user"`
+}
+
 func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, error) {
 	if c.Client == nil {
 		return nil, fmt.Errorf("graphql client is required")
+	}
+	if c.UserID == "" {
+		return nil, fmt.Errorf("user id is required")
 	}
 
 	response, err := c.Client.Do(ctx, gql.Request{
@@ -264,14 +301,81 @@ func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, error) {
 	seen := make(map[string]bool)
 	var games []string
 	for _, campaign := range data.CurrentUser.DropCampaigns {
-		if campaign.Status == "ACTIVE" && campaign.Game.DisplayName != "" {
-			name := campaign.Game.DisplayName
-			if !seen[name] {
-				seen[name] = true
-				games = append(games, name)
-			}
+		if campaign.Status != "ACTIVE" {
+			continue
+		}
+
+		detail, err := c.getCampaignDetails(ctx, campaign.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !campaignDetailEarnable(time.Now().UTC(), detail) {
+			continue
+		}
+
+		name := campaignDetailGameName(detail)
+		if name == "" {
+			name = campaign.Game.DisplayName
+		}
+		key := strings.ToLower(name)
+		if name != "" && !seen[key] {
+			seen[key] = true
+			games = append(games, name)
 		}
 	}
 
 	return games, nil
+}
+
+func (c Client) getCampaignDetails(ctx context.Context, campaignID string) (*campaignDetailsResponse, error) {
+	response, err := c.Client.Do(ctx, gql.Request{
+		OperationName: campaignDetailsOperation,
+		Variables: map[string]any{
+			"channelLogin": c.UserID,
+			"dropID":       campaignID,
+		},
+		Extensions: persistedQuery(campaignDetailsHash),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var data campaignDetailsResponse
+	if err := json.Unmarshal(response.Data, &data); err != nil {
+		return nil, fmt.Errorf("decode campaign details response: %w", err)
+	}
+	return &data, nil
+}
+
+func campaignDetailEarnable(now time.Time, data *campaignDetailsResponse) bool {
+	if data == nil || data.User == nil || data.User.DropCampaign == nil {
+		return false
+	}
+	campaign := data.User.DropCampaign
+	if !campaign.Self.IsAccountConnected {
+		return false
+	}
+	if !campaignDropActive(now, campaign.Status, campaign.StartAt, campaign.EndAt, "", "") {
+		return false
+	}
+	for _, drop := range campaign.TimeBasedDrops {
+		if drop.RequiredMinutesWatched <= 0 || drop.Self.IsClaimed || !boolDefault(drop.Self.HasPreconditionsMet, true) {
+			continue
+		}
+		if campaignDropActive(now, campaign.Status, campaign.StartAt, campaign.EndAt, drop.StartAt, drop.EndAt) {
+			return true
+		}
+	}
+	return false
+}
+
+func campaignDetailGameName(data *campaignDetailsResponse) string {
+	if data == nil || data.User == nil || data.User.DropCampaign == nil {
+		return ""
+	}
+	game := data.User.DropCampaign.Game
+	if game.DisplayName != "" {
+		return game.DisplayName
+	}
+	return game.Name
 }
