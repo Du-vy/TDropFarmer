@@ -11,14 +11,9 @@ FROM alpine:latest
 
 RUN apk add --no-cache ca-certificates tzdata
 
-RUN addgroup -S tdropfarmer && adduser -S -G tdropfarmer tdropfarmer
-
 WORKDIR /app
-RUN mkdir -p /app/data && chown -R tdropfarmer:tdropfarmer /app
 
-COPY --from=build --chown=tdropfarmer:tdropfarmer /out/tdropfarmer /usr/local/bin/tdropfarmer
-
-USER tdropfarmer
+COPY --from=build /out/tdropfarmer /usr/local/bin/tdropfarmer
 
 VOLUME ["/app/data"]
 
