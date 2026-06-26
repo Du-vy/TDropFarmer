@@ -92,8 +92,9 @@ type Watcher struct {
 
 func NewWatcher(fetcher TokenFetcher) *Watcher {
 	return &Watcher{
-		fetcher: fetcher,
-		client:  &http.Client{Timeout: 20 * time.Second},
+		fetcher:  fetcher,
+		client:   &http.Client{Timeout: 20 * time.Second},
+		spadeURL: "https://spade.twitch.tv/track",
 	}
 }
 
@@ -177,7 +178,9 @@ func (w *Watcher) SendMinuteWatched(ctx context.Context, streamer domain.Streame
 
 	if w.spadeURL != "" {
 		payload := encodeSpadePayload(streamer.ID)
-		_ = w.httpPostForm(ctx, w.spadeURL, payload)
+		if err := w.httpPostForm(ctx, w.spadeURL, payload); err != nil {
+			return fmt.Errorf("post spade event: %w", err)
+		}
 	}
 
 	return nil

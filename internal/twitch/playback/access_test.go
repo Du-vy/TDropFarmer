@@ -76,6 +76,11 @@ func TestWatcher_SendMinuteWatched(t *testing.T) {
 				t.Errorf("expected HEAD request for segment, got %s", r.Method)
 			}
 			w.WriteHeader(http.StatusOK)
+		case strings.Contains(r.URL.Path, "/track"):
+			if r.Method != http.MethodPost {
+				t.Errorf("expected POST request for spade, got %s", r.Method)
+			}
+			w.WriteHeader(http.StatusNoContent)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.String())
 			w.WriteHeader(http.StatusNotFound)
@@ -95,6 +100,7 @@ func TestWatcher_SendMinuteWatched(t *testing.T) {
 	fetcher := TokenFetcher{Client: tokenClient}
 
 	watcher := NewWatcher(fetcher)
+	watcher.spadeURL = server.URL + "/track"
 	err := watcher.SendMinuteWatched(context.Background(), domain.Streamer{
 		Login: "test_channel",
 		ID:    "12345",
