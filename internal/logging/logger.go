@@ -251,6 +251,7 @@ func (c *ConsoleHandler) Handle(_ context.Context, r slog.Record) error {
 
 	case "drop progress update":
 		campaign := attrs["campaign"]
+		game := attrs["game"]
 		name := attrs["name"]
 		current := attrs["current"]
 		required := attrs["required"]
@@ -260,7 +261,12 @@ func (c *ConsoleHandler) Handle(_ context.Context, r slog.Record) error {
 		if reqInt > 0 {
 			pct = (currInt * 100) / reqInt
 		}
-		formattedMsg = fmt.Sprintf("🎁 \033[35m\033[1mDrop Progress\033[0m: \033[36m%v\033[0m | %v/%v min \033[33m(%d%%)\033[0m | Campaign: \033[90m%v\033[0m", name, current, required, pct, campaign)
+		gameStr, _ := game.(string)
+		if gameStr != "" {
+			formattedMsg = fmt.Sprintf("🎁 \033[35m\033[1mDrop Progress\033[0m: \033[36m%v\033[0m | %v/%v min \033[33m(%d%%)\033[0m | Game: \033[32m%v\033[0m | Campaign: \033[90m%v\033[0m", name, current, required, pct, gameStr, campaign)
+		} else {
+			formattedMsg = fmt.Sprintf("🎁 \033[35m\033[1mDrop Progress\033[0m: \033[36m%v\033[0m | %v/%v min \033[33m(%d%%)\033[0m | Campaign: \033[90m%v\033[0m", name, current, required, pct, campaign)
+		}
 	}
 
 	if formattedMsg != "" {

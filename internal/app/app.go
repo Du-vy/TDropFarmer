@@ -281,6 +281,7 @@ func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invCli
 			}
 			a.logger.Info("drop progress update",
 				slog.String("campaign", campaign),
+				slog.String("game", drop.GameName),
 				slog.String("name", drop.Name),
 				slog.Int("current", drop.CurrentMinutes),
 				slog.Int("required", drop.RequiredMinutes),
