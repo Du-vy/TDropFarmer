@@ -244,6 +244,19 @@ func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invCli
 	}
 
 	for _, drop := range drops {
+		if !drop.IsClaimed {
+			campaign := drop.CampaignName
+			if campaign == "" {
+				campaign = drop.CampaignID
+			}
+			a.logger.Info("drop progress update",
+				slog.String("campaign", campaign),
+				slog.String("name", drop.Name),
+				slog.Int("current", drop.CurrentMinutes),
+				slog.Int("required", drop.RequiredMinutes),
+			)
+		}
+
 		if drop.IsClaimable {
 			a.logger.Info("claiming drop",
 				slog.String("id", drop.ID),

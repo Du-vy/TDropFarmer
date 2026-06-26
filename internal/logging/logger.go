@@ -203,6 +203,19 @@ func (c *ConsoleHandler) Handle(_ context.Context, r slog.Record) error {
 		streamer := attrs["streamer"]
 		points := attrs["points"]
 		formattedMsg = fmt.Sprintf("🎁 \033[36m%v\033[0m bonus claimed: \033[32m%v\033[0m points!", streamer, points)
+
+	case "drop progress update":
+		campaign := attrs["campaign"]
+		name := attrs["name"]
+		current := attrs["current"]
+		required := attrs["required"]
+		pct := 0
+		currInt, _ := current.(int)
+		reqInt, _ := required.(int)
+		if reqInt > 0 {
+			pct = (currInt * 100) / reqInt
+		}
+		formattedMsg = fmt.Sprintf("🎁 \033[35m\033[1mDrop Progress\033[0m: \033[36m%v\033[0m | %v/%v min \033[33m(%d%%)\033[0m | Campaign: \033[90m%v\033[0m", name, current, required, pct, campaign)
 	}
 
 	if formattedMsg != "" {

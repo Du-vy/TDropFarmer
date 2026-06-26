@@ -28,6 +28,7 @@ type Drop struct {
 	ID              string
 	Name            string
 	CampaignID      string
+	CampaignName    string
 	RequiredMinutes int
 	CurrentMinutes  int
 	DropInstanceID  string
@@ -74,6 +75,7 @@ func (c Client) GetInventory(ctx context.Context) ([]Drop, error) {
 				ID:              td.ID,
 				Name:            td.Name,
 				CampaignID:      campaign.ID,
+				CampaignName:    campaign.Name,
 				RequiredMinutes: td.RequiredMinutesWatched,
 				CurrentMinutes:  td.Self.CurrentMinutesWatched,
 				DropInstanceID:  dropInstanceID,
