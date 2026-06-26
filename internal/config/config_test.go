@@ -33,9 +33,6 @@ func TestDefaultsAndNormalize(t *testing.T) {
 	if cfg.Streamers[0].Login != "streamer_one" {
 		t.Fatalf("streamer login = %q, want normalized login", cfg.Streamers[0].Login)
 	}
-	if cfg.Watch.MaxCampaigns != 3 {
-		t.Fatalf("max campaigns = %d, want 3", cfg.Watch.MaxCampaigns)
-	}
 	if !cfg.Features.ClaimBonusesEnabled() {
 		t.Fatalf("claim bonuses default should be enabled")
 	}

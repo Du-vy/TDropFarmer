@@ -21,9 +21,6 @@ func Validate(cfg Config) error {
 	if cfg.Watch.TickSeconds < 5 {
 		errs = append(errs, fmt.Errorf("watch.tick_seconds must be at least 5"))
 	}
-	if cfg.Watch.MaxCampaigns < 1 {
-		errs = append(errs, fmt.Errorf("watch.max_campaigns must be at least 1"))
-	}
 
 	for _, priority := range cfg.Watch.Priorities {
 		if !validPriority(priority) {

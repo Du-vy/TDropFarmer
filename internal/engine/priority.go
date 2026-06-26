@@ -62,7 +62,7 @@ func byPriority(prefs []priorityLevel, a, b StreamerState) bool {
 	return false
 }
 
-func selectActive(prefs []priorityLevel, states []StreamerState, activeGames []string, filterByActiveGames bool, maxCampaigns int) []StreamerState {
+func selectActive(prefs []priorityLevel, states []StreamerState, activeGames []string, filterByActiveGames bool) []StreamerState {
 	var selected []StreamerState
 
 	// 1. Select all static online channels
@@ -108,8 +108,8 @@ func selectActive(prefs []priorityLevel, states []StreamerState, activeGames []s
 	// 4. Rank the best unique campaign/game dynamic streams
 	rankedDynamic := rankStreamers(prefs, bestDynamicPerGame)
 
-	// 5. Select up to maxCampaigns dynamic channels
-	limit := maxCampaigns
+	// 5. Select up to 1 dynamic channel
+	limit := 1
 	if limit > len(rankedDynamic) {
 		limit = len(rankedDynamic)
 	}

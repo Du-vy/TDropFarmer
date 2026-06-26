@@ -21,7 +21,6 @@ type Engine struct {
 	logger    *slog.Logger
 
 	priorities   []priorityLevel
-	maxCampaigns int
 	tickSeconds  int
 
 	activeMu sync.Mutex
@@ -77,14 +76,13 @@ func New(cfg config.Config, resolved []domain.Streamer, logger *slog.Logger, opt
 	states = applyConfigOverrides(states, cfg.Streamers)
 
 	engine := &Engine{
-		config:       cfg,
-		streamers:    states,
-		logger:       logger,
-		priorities:   parsePriorities(cfg.Watch.Priorities),
-		maxCampaigns: cfg.Watch.MaxCampaigns,
-		tickSeconds:  cfg.Watch.TickSeconds,
-		events:       make(chan Event, 1024),
-		eventsOut:    make(chan Event, 1024),
+		config:      cfg,
+		streamers:   states,
+		logger:      logger,
+		priorities:  parsePriorities(cfg.Watch.Priorities),
+		tickSeconds: cfg.Watch.TickSeconds,
+		events:      make(chan Event, 1024),
+		eventsOut:   make(chan Event, 1024),
 	}
 	for _, opt := range opts {
 		opt(engine)
@@ -119,7 +117,6 @@ func (e *Engine) Run(ctx context.Context) error {
 
 	e.logger.Info("engine started",
 		slog.Int("streamers", len(e.streamers)),
-		slog.Int("max_campaigns", e.maxCampaigns),
 		slog.Int("tick_seconds", e.tickSeconds),
 	)
 
@@ -142,7 +139,7 @@ func (e *Engine) Run(ctx context.Context) error {
 }
 
 func (e *Engine) reschedule() {
-	active := selectActive(e.priorities, e.streamers, e.activeGames, e.config.Features.ClaimDropsEnabled(), e.maxCampaigns)
+	active := selectActive(e.priorities, e.streamers, e.activeGames, e.config.Features.ClaimDropsEnabled())
 
 	previous := e.activeSnapshot()
 	added, removed := diffSnapshots(previous, active)

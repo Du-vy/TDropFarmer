@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/Du-vy/TDropFarmer/internal/twitch/gql"
 )
@@ -38,6 +39,7 @@ type Drop struct {
 	DropInstanceID  string
 	IsClaimed       bool
 	IsClaimable     bool
+	IsEarnable      bool
 }
 
 func (c Client) GetInventory(ctx context.Context) ([]Drop, error) {
@@ -65,6 +67,7 @@ func (c Client) GetInventory(ctx context.Context) ([]Drop, error) {
 		return nil, nil
 	}
 
+	now := time.Now().UTC()
 	var drops []Drop
 	for _, campaign := range data.CurrentUser.Inventory.DropCampaignsInProgress {
 		for _, td := range campaign.TimeBasedDrops {
@@ -74,6 +77,7 @@ func (c Client) GetInventory(ctx context.Context) ([]Drop, error) {
 			}
 
 			isClaimable := !td.Self.IsClaimed && dropInstanceID != ""
+			isEarnable := !td.Self.IsClaimed && boolDefault(td.Self.HasPreconditionsMet, true) && campaignDropActive(now, campaign.Status, campaign.StartAt, campaign.EndAt, td.StartAt, td.EndAt)
 
 			drops = append(drops, Drop{
 				ID:              td.ID,
@@ -86,11 +90,53 @@ func (c Client) GetInventory(ctx context.Context) ([]Drop, error) {
 				DropInstanceID:  dropInstanceID,
 				IsClaimed:       td.Self.IsClaimed,
 				IsClaimable:     isClaimable,
+				IsEarnable:      isEarnable,
 			})
 		}
 	}
 
 	return drops, nil
+}
+
+func campaignDropActive(now time.Time, status, campaignStart, campaignEnd, dropStart, dropEnd string) bool {
+	if status != "" && status != "ACTIVE" {
+		return false
+	}
+	if !withinWindow(now, campaignStart, campaignEnd) {
+		return false
+	}
+	return withinWindow(now, dropStart, dropEnd)
+}
+
+func withinWindow(now time.Time, start, end string) bool {
+	if start != "" {
+		startAt, err := parseTwitchTime(start)
+		if err == nil && now.Before(startAt) {
+			return false
+		}
+	}
+	if end != "" {
+		endAt, err := parseTwitchTime(end)
+		if err == nil && !now.Before(endAt) {
+			return false
+		}
+	}
+	return true
+}
+
+func parseTwitchTime(value string) (time.Time, error) {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return parsed.UTC(), nil
+}
+
+func boolDefault(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
 }
 
 func (c Client) ClaimDrop(ctx context.Context, dropInstanceID string) (bool, error) {
@@ -148,9 +194,12 @@ type inventoryResponse struct {
 	CurrentUser *struct {
 		Inventory struct {
 			DropCampaignsInProgress []struct {
-				ID   string `json:"id"`
-				Name string `json:"name"`
-				Game struct {
+				ID      string `json:"id"`
+				Name    string `json:"name"`
+				Status  string `json:"status"`
+				StartAt string `json:"startAt"`
+				EndAt   string `json:"endAt"`
+				Game    struct {
 					ID   string `json:"id"`
 					Name string `json:"name"`
 					Slug string `json:"slug"`
@@ -158,10 +207,12 @@ type inventoryResponse struct {
 				TimeBasedDrops []struct {
 					ID                     string `json:"id"`
 					Name                   string `json:"name"`
+					StartAt                string `json:"startAt"`
+					EndAt                  string `json:"endAt"`
 					RequiredMinutesWatched int    `json:"requiredMinutesWatched"`
 					Self                   struct {
 						CurrentMinutesWatched int     `json:"currentMinutesWatched"`
-						HasPreconditionsMet   bool    `json:"hasPreconditionsMet"`
+						HasPreconditionsMet   *bool   `json:"hasPreconditionsMet"`
 						DropInstanceID        *string `json:"dropInstanceID"`
 						IsClaimed             bool    `json:"isClaimed"`
 					} `json:"self"`
@@ -224,4 +275,3 @@ func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, error) {
 
 	return games, nil
 }
-

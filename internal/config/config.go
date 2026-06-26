@@ -26,7 +26,6 @@ type WatchConfig struct {
 	Games              []string `json:"games"`
 	AllCampaigns       bool     `json:"all_campaigns"`
 	AutoStartCampaigns bool     `json:"auto_start_campaigns"`
-	MaxCampaigns       int      `json:"max_campaigns"`
 }
 
 type FeatureConfig struct {

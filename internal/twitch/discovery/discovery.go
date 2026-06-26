@@ -51,9 +51,9 @@ func (c Client) GetLiveStreams(ctx context.Context, gameName string, limit int) 
 	response, err := c.Client.Do(ctx, gql.Request{
 		OperationName: gameDirectoryOperation,
 		Variables: map[string]any{
-			"limit":             limit,
-			"slug":              slug,
-			"imageWidth":        50,
+			"limit":              limit,
+			"slug":               slug,
+			"imageWidth":         50,
 			"includeCostreaming": false,
 			"sortTypeIsRecency":  false,
 			"options": map[string]any{
@@ -94,14 +94,16 @@ func (c Client) GetLiveStreams(ctx context.Context, gameName string, limit int) 
 		if edge.Node.Broadcaster == nil {
 			continue
 		}
-		var gameName string
+		var gameID, gameName string
 		if edge.Node.Game != nil {
+			gameID = edge.Node.Game.ID
 			gameName = edge.Node.Game.Name
 		}
 		streamers = append(streamers, domain.Streamer{
 			ID:          edge.Node.Broadcaster.ID,
 			Login:       edge.Node.Broadcaster.Login,
 			DisplayName: edge.Node.Broadcaster.DisplayName,
+			GameID:      gameID,
 			GameName:    gameName,
 			Title:       edge.Node.Title,
 			BroadcastID: edge.Node.ID,

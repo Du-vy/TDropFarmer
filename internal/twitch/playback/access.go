@@ -1,6 +1,8 @@
 package playback
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -18,6 +20,7 @@ import (
 )
 
 var usherBaseURL = "https://usher.ttvnw.net/api/channel/hls"
+
 const (
 
 	// Raw GQL query instead of persisted query hash.
@@ -29,6 +32,12 @@ const (
     value
     signature
     __typename
+  }
+}`
+
+	sendSpadeEventsMutation = `mutation SendEvents($input: SendSpadeEventsInput!) {
+  sendSpadeEvents(input: $input) {
+    statusCode
   }
 }`
 )
@@ -177,13 +186,44 @@ func (w *Watcher) SendMinuteWatched(ctx context.Context, streamer domain.Streame
 		return fmt.Errorf("head media segment: %w", err)
 	}
 
-	if w.spadeURL != "" {
-		payload := encodeSpadePayload(streamer, userID)
-		if err := w.httpPostForm(ctx, w.spadeURL, payload); err != nil {
-			return fmt.Errorf("post spade event: %w", err)
-		}
+	if err := w.sendSpadeEvents(ctx, streamer, userID); err != nil {
+		return fmt.Errorf("send watch event: %w", err)
 	}
 
+	return nil
+}
+
+func (w *Watcher) sendSpadeEvents(ctx context.Context, streamer domain.Streamer, userID string) error {
+	encoded, err := encodeGQLWatchPayload(streamer, userID)
+	if err != nil {
+		return err
+	}
+
+	response, err := w.fetcher.Client.Do(ctx, gql.Request{
+		Query: sendSpadeEventsMutation,
+		Variables: map[string]any{
+			"input": map[string]any{
+				"data":       encoded,
+				"repository": "twilight",
+				"encoding":   "GZIP_B64",
+			},
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	var result struct {
+		SendSpadeEvents struct {
+			StatusCode int `json:"statusCode"`
+		} `json:"sendSpadeEvents"`
+	}
+	if err := json.Unmarshal(response.Data, &result); err != nil {
+		return fmt.Errorf("decode watch event response: %w", err)
+	}
+	if result.SendSpadeEvents.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("unexpected watch event status %d", result.SendSpadeEvents.StatusCode)
+	}
 	return nil
 }
 
@@ -237,6 +277,9 @@ func (w *Watcher) httpPostForm(ctx context.Context, target string, data []byte) 
 		return err
 	}
 	resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("http status %d", resp.StatusCode)
+	}
 	return nil
 }
 
@@ -261,6 +304,46 @@ func encodeSpadePayload(streamer domain.Streamer, userID string) []byte {
 	raw, _ := json.Marshal(payload)
 	encoded := base64.StdEncoding.EncodeToString(raw)
 	return []byte(fmt.Sprintf("data=%s", encoded))
+}
+
+func encodeGQLWatchPayload(streamer domain.Streamer, userID string) (string, error) {
+	payload := []map[string]any{
+		{
+			"event": "minute-watched",
+			"properties": map[string]any{
+				"broadcast_id":   streamer.BroadcastID,
+				"channel_id":     streamer.ID,
+				"channel":        streamer.Login,
+				"client_time":    time.Now().UTC().Format(time.RFC3339Nano),
+				"game":           streamer.GameName,
+				"game_id":        streamer.GameID,
+				"hidden":         false,
+				"is_live":        true,
+				"live":           true,
+				"logged_in":      true,
+				"minutes_logged": 1,
+				"muted":          false,
+				"user_id":        userID,
+			},
+		},
+	}
+
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := writer.Write(raw); err != nil {
+		_ = writer.Close()
+		return "", err
+	}
+	if err := writer.Close(); err != nil {
+		return "", err
+	}
+
+	return base64.StdEncoding.EncodeToString(compressed.Bytes()), nil
 }
 
 func nonEmptyLines(text string) []string {

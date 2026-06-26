@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,8 +14,8 @@ import (
 	"github.com/Du-vy/TDropFarmer/internal/config"
 	"github.com/Du-vy/TDropFarmer/internal/domain"
 	"github.com/Du-vy/TDropFarmer/internal/engine"
-	"github.com/Du-vy/TDropFarmer/internal/store"
 	"github.com/Du-vy/TDropFarmer/internal/notify"
+	"github.com/Du-vy/TDropFarmer/internal/store"
 	"github.com/Du-vy/TDropFarmer/internal/twitch"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/channelpoints"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/chat"
@@ -122,7 +123,7 @@ func (a *App) Run(ctx context.Context) error {
 	if a.config.Features.ClaimDropsEnabled() {
 		inventoryClient := inventory.Client{Client: gqlClient}
 		var activeGamesList []string
-		
+
 		// 1. Fetch in-progress uncompleted campaigns
 		drops, errInv := inventoryClient.GetInventory(ctx)
 		inProgressMap := make(map[string]bool)
@@ -130,7 +131,7 @@ func (a *App) Run(ctx context.Context) error {
 			a.logger.Warn("initial inventory fetch failed", slog.String("error", errInv.Error()))
 		} else {
 			for _, drop := range drops {
-				if !drop.IsClaimed && drop.GameName != "" {
+				if drop.IsEarnable && drop.GameName != "" {
 					if !inProgressMap[drop.GameName] {
 						inProgressMap[drop.GameName] = true
 						activeGamesList = append(activeGamesList, drop.GameName)
@@ -223,8 +224,6 @@ func (a *App) Run(ctx context.Context) error {
 		}()
 	}
 
-
-
 	if a.config.Features.ClaimDropsEnabled() {
 		inventoryClient := inventory.Client{Client: gqlClient}
 		wg.Add(1)
@@ -302,7 +301,7 @@ func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invCli
 
 	activeGamesMap := make(map[string]bool)
 	for _, drop := range drops {
-		if !drop.IsClaimed {
+		if !drop.IsClaimed && (drop.IsEarnable || drop.IsClaimable) {
 			campaign := drop.CampaignName
 			if campaign == "" {
 				campaign = drop.CampaignID
@@ -313,7 +312,7 @@ func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invCli
 				slog.Int("current", drop.CurrentMinutes),
 				slog.Int("required", drop.RequiredMinutes),
 			)
-			if drop.GameName != "" {
+			if drop.IsEarnable && drop.GameName != "" {
 				activeGamesMap[drop.GameName] = true
 			}
 		}
@@ -486,7 +485,7 @@ func (a *App) discoverGamesStreamers(ctx context.Context, client discovery.Clien
 
 	activeGamesCount := 0
 	for _, game := range gamesToDiscover {
-		if useAllCampaigns && activeGamesCount >= a.config.Watch.MaxCampaigns {
+		if useAllCampaigns && activeGamesCount >= 1 {
 			break
 		}
 
@@ -597,10 +596,12 @@ func (a *App) pollOnlineStatus(ctx context.Context, eng *engine.Engine, client *
 					if a.staticStreamers[i].Login == s.Login {
 						if isOnline {
 							a.staticStreamers[i].BroadcastID = streamInfo.ID
+							a.staticStreamers[i].GameID = streamInfo.GameID
 							a.staticStreamers[i].GameName = streamInfo.GameName
 							a.staticStreamers[i].Title = streamInfo.Title
 						} else {
 							a.staticStreamers[i].BroadcastID = ""
+							a.staticStreamers[i].GameID = ""
 						}
 					}
 				}
@@ -608,10 +609,12 @@ func (a *App) pollOnlineStatus(ctx context.Context, eng *engine.Engine, client *
 					if a.dynamicStreamers[i].Login == s.Login {
 						if isOnline {
 							a.dynamicStreamers[i].BroadcastID = streamInfo.ID
+							a.dynamicStreamers[i].GameID = streamInfo.GameID
 							a.dynamicStreamers[i].GameName = streamInfo.GameName
 							a.dynamicStreamers[i].Title = streamInfo.Title
 						} else {
 							a.dynamicStreamers[i].BroadcastID = ""
+							a.dynamicStreamers[i].GameID = ""
 						}
 					}
 				}
@@ -647,10 +650,7 @@ func (a *App) runMinuteWatched(ctx context.Context, eng *engine.Engine, gqlClien
 	fetcher := playback.TokenFetcher{Client: gqlClient}
 	watcher := playback.NewWatcher(fetcher)
 
-	// Dynamically discover the active spade URL at startup to be resilient to Twitch updates
-	spadeURL := playback.DiscoverSpadeURL(ctx)
-	watcher.SetSpadeURL(spadeURL)
-	a.logger.Info("discovered spade telemetry endpoint", slog.String("url", spadeURL))
+	a.logger.Info("watch telemetry configured", slog.String("transport", "graphql_send_spade_events"))
 
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
@@ -663,7 +663,7 @@ func (a *App) runMinuteWatched(ctx context.Context, eng *engine.Engine, gqlClien
 			active := eng.ActiveStreamers()
 			for _, login := range active {
 				s := a.findCombinedStreamer(login)
-				if s == nil {
+				if s == nil || !a.isActiveDropGame(s.GameName) {
 					continue
 				}
 				if err := watcher.SendMinuteWatched(ctx, *s, a.userID); err != nil {
@@ -671,10 +671,31 @@ func (a *App) runMinuteWatched(ctx context.Context, eng *engine.Engine, gqlClien
 						slog.String("streamer", login),
 						slog.String("error", err.Error()),
 					)
+					continue
+				} else {
+					a.logger.Info("minute watched sent",
+						slog.String("streamer", login),
+						slog.String("game", s.GameName),
+					)
 				}
+				break
 			}
 		}
 	}
+}
+
+func (a *App) isActiveDropGame(gameName string) bool {
+	if gameName == "" {
+		return false
+	}
+	a.activeGamesMu.RLock()
+	defer a.activeGamesMu.RUnlock()
+	for _, activeGame := range a.activeGames {
+		if strings.EqualFold(gameName, activeGame) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) pollChannelPoints(ctx context.Context, eng *engine.Engine, loader channelpoints.ContextLoader) {
@@ -734,7 +755,6 @@ func streamerLogins(streamers []config.StreamerConfig) []string {
 	}
 	return logins
 }
-
 
 func (a *App) startChat(ctx context.Context, eng *engine.Engine, login string, token string) {
 	a.chatMu.Lock()

@@ -251,8 +251,8 @@ func (c *ConsoleHandler) Handle(_ context.Context, r slog.Record) error {
 		current := attrs["current"]
 		required := attrs["required"]
 		pct := 0
-		currInt, _ := current.(int)
-		reqInt, _ := required.(int)
+		currInt, _ := intAttr(current)
+		reqInt, _ := intAttr(required)
 		if reqInt > 0 {
 			pct = (currInt * 100) / reqInt
 		}
@@ -280,6 +280,19 @@ func (c *ConsoleHandler) Handle(_ context.Context, r slog.Record) error {
 
 	fmt.Fprintf(c.writer, "\033[90m%s\033[0m %s %s%s\n", timeStr, levelStr, r.Message, attrStr)
 	return nil
+}
+
+func intAttr(value any) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case uint64:
+		return int(v), true
+	default:
+		return 0, false
+	}
 }
 
 func (c *ConsoleHandler) writeAttr(sb *strings.Builder, attr slog.Attr) {

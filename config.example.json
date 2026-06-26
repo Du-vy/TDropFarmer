@@ -7,8 +7,7 @@
     "tick_seconds": 20,
     "games": ["Smite", "Destiny 2"],
     "all_campaigns": false,
-    "auto_start_campaigns": false,
-    "max_campaigns": 3
+    "auto_start_campaigns": false
   },
   "features": {
     "claim_bonuses": true,

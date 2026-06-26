@@ -6,6 +6,7 @@ type Streamer struct {
 	DisplayName string
 	Broadcaster string
 	ProfileURL  string
+	GameID      string
 	GameName    string
 	Title       string
 	BroadcastID string

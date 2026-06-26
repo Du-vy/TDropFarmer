@@ -48,9 +48,6 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Watch.TickSeconds == 0 {
 		cfg.Watch.TickSeconds = 20
 	}
-	if cfg.Watch.MaxCampaigns == 0 {
-		cfg.Watch.MaxCampaigns = 3
-	}
 
 	if cfg.Features.ClaimBonuses == nil {
 		cfg.Features.ClaimBonuses = Bool(true)
