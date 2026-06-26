@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  tdropfarmer:
+    image: duvydev/tdropfarmer:latest
+    container_name: tdropfarmer
+    restart: unless-stopped
+    volumes:
+      # Map the local configuration file to the container config path
+      - ./config.json:/app/config.json:ro
+      # Map the local data directory to persist session state, logs, and database files
+      - ./data:/app/data
+    environment:
+      # Optional: set timezone inside the container so logs match your local time
+      - TZ=America/Argentina/Buenos_Aires
+    # You can also pass custom command args if needed, e.g. using a custom config path or debug flag
+    # command: ["run", "--config", "/app/config.json", "--debug"]
