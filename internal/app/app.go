@@ -628,7 +628,7 @@ func (a *App) runMinuteWatched(ctx context.Context, eng *engine.Engine, gqlClien
 					)
 					continue
 				} else {
-					a.logger.Info("minute watched sent",
+					a.logger.Warn("minute watched sent",
 						slog.String("streamer", login),
 						slog.String("game", s.GameName),
 					)
