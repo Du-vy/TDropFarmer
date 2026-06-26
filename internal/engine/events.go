@@ -34,4 +34,6 @@ type StreamerState struct {
 	StreakReady bool
 	Watching    bool
 	Priority    int
+	GameName    string
+	Title       string
 }

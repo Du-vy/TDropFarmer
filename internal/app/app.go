@@ -455,14 +455,14 @@ func (a *App) pollOnlineStatus(ctx context.Context, eng *engine.Engine, client *
 				streams = append(streams, batch...)
 			}
 
-			currentOnline := make(map[string]bool)
+			currentOnline := make(map[string]twitch.StreamInfo)
 			for _, stream := range streams {
-				currentOnline[stream.UserLogin] = true
+				currentOnline[stream.UserLogin] = stream
 			}
 
 			for _, s := range streamers {
 				wasOnline := online[s.Login]
-				isOnline := currentOnline[s.Login]
+				streamInfo, isOnline := currentOnline[s.Login]
 				online[s.Login] = isOnline
 
 				if isOnline && !wasOnline {
@@ -470,7 +470,7 @@ func (a *App) pollOnlineStatus(ctx context.Context, eng *engine.Engine, client *
 						Type:      engine.EventOnline,
 						Streamer:  s.Login,
 						ChannelID: s.ID,
-						Payload:   nil,
+						Payload:   streamInfo,
 						Time:      time.Now(),
 					})
 				}

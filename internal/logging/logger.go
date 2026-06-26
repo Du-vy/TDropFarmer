@@ -147,6 +147,69 @@ func (c *ConsoleHandler) Enabled(_ context.Context, level slog.Level) bool {
 }
 
 func (c *ConsoleHandler) Handle(_ context.Context, r slog.Record) error {
+	timeStr := r.Time.Format("15:04:05")
+
+	// Pre-extract attributes for custom rendering
+	attrs := make(map[string]any)
+	for _, attr := range c.attrs {
+		attrs[attr.Key] = attr.Value.Any()
+	}
+	r.Attrs(func(attr slog.Attr) bool {
+		attrs[attr.Key] = attr.Value.Any()
+		return true
+	})
+
+	var formattedMsg string
+
+	switch r.Message {
+	case "start watching":
+		login := attrs["login"]
+		game := attrs["game"]
+		title := attrs["title"]
+		if game == nil || game == "" {
+			game = "unknown"
+		}
+		if title == nil || title == "" {
+			title = "no title"
+		}
+		formattedMsg = fmt.Sprintf("▶ \033[32m\033[1mWatching\033[0m \033[36m%v\033[0m playing \033[33m%v\033[0m \033[90m(%v)\033[0m", login, game, title)
+
+	case "stop watching":
+		login := attrs["login"]
+		formattedMsg = fmt.Sprintf("■ \033[31m\033[1mStopped watching\033[0m \033[36m%v\033[0m", login)
+
+	case "streamer online status updated":
+		streamer := attrs["streamer"]
+		onlineVal, _ := attrs["online"].(bool)
+		if onlineVal {
+			formattedMsg = fmt.Sprintf("🟢 \033[36m%v\033[0m went \033[32mONLINE\033[0m", streamer)
+		} else {
+			formattedMsg = fmt.Sprintf("🔴 \033[36m%v\033[0m went \033[31mOFFLINE\033[0m", streamer)
+		}
+
+	case "points updated":
+		streamer := attrs["streamer"]
+		reason := attrs["reason"]
+		gained := attrs["gained"]
+		total := attrs["total"]
+		formattedMsg = fmt.Sprintf("💰 \033[36m%v\033[0m points updated: \033[32m+%v\033[0m (%v) | total: \033[33m%v\033[0m", streamer, gained, reason, total)
+
+	case "points balance loaded":
+		streamer := attrs["streamer"]
+		balance := attrs["balance"]
+		formattedMsg = fmt.Sprintf("📊 \033[36m%v\033[0m balance: \033[33m%v\033[0m", streamer, balance)
+
+	case "bonus claimed":
+		streamer := attrs["streamer"]
+		points := attrs["points"]
+		formattedMsg = fmt.Sprintf("🎁 \033[36m%v\033[0m bonus claimed: \033[32m%v\033[0m points!", streamer, points)
+	}
+
+	if formattedMsg != "" {
+		fmt.Fprintf(c.writer, "\033[90m%s\033[0m %s\n", timeStr, formattedMsg)
+		return nil
+	}
+
 	var levelStr string
 	switch r.Level {
 	case slog.LevelDebug:
@@ -160,9 +223,6 @@ func (c *ConsoleHandler) Handle(_ context.Context, r slog.Record) error {
 	default:
 		levelStr = fmt.Sprintf("[%s]", r.Level)
 	}
-
-	timeStr := r.Time.Format("15:04:05")
-	msg := r.Message
 
 	var attrsBuilder strings.Builder
 	for _, attr := range c.attrs {
@@ -178,7 +238,7 @@ func (c *ConsoleHandler) Handle(_ context.Context, r slog.Record) error {
 		attrStr = " " + attrStr
 	}
 
-	fmt.Fprintf(c.writer, "\033[90m%s\033[0m %s %s%s\n", timeStr, levelStr, msg, attrStr)
+	fmt.Fprintf(c.writer, "\033[90m%s\033[0m %s %s%s\n", timeStr, levelStr, r.Message, attrStr)
 	return nil
 }
 

@@ -10,6 +10,7 @@ import (
 	"github.com/Du-vy/TDropFarmer/internal/config"
 	"github.com/Du-vy/TDropFarmer/internal/domain"
 	"github.com/Du-vy/TDropFarmer/internal/store"
+	"github.com/Du-vy/TDropFarmer/internal/twitch"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/channelpoints"
 )
 
@@ -60,6 +61,8 @@ func New(cfg config.Config, resolved []domain.Streamer, logger *slog.Logger, opt
 			ChannelID:   streamer.ID,
 			DisplayName: streamer.DisplayName,
 			Priority:    i,
+			GameName:    streamer.GameName,
+			Title:       streamer.Title,
 		})
 	}
 	states = applyConfigOverrides(states, cfg.Streamers)
@@ -140,6 +143,8 @@ func (e *Engine) reschedule() {
 		e.logger.Info("start watching",
 			slog.String("login", state.Login),
 			slog.String("channel_id", state.ChannelID),
+			slog.String("game", state.GameName),
+			slog.String("title", state.Title),
 		)
 		e.emit(Event{
 			Type:      EventOnline,
@@ -214,6 +219,10 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		switch event.Type {
 		case EventOnline:
 			e.streamers[i].Online = true
+			if info, ok := event.Payload.(twitch.StreamInfo); ok {
+				e.streamers[i].GameName = info.GameName
+				e.streamers[i].Title = info.Title
+			}
 			e.logger.Info("streamer online status updated", slog.String("streamer", state.Login), slog.Bool("online", true))
 			e.reschedule()
 		case EventOffline:
@@ -260,6 +269,8 @@ func (e *Engine) handleUpdateStreamers(resolved []domain.Streamer) {
 	for i, streamer := range resolved {
 		if state, ok := existing[streamer.Login]; ok {
 			state.Priority = i
+			state.GameName = streamer.GameName
+			state.Title = streamer.Title
 			states = append(states, state)
 		} else {
 			states = append(states, StreamerState{
@@ -268,6 +279,8 @@ func (e *Engine) handleUpdateStreamers(resolved []domain.Streamer) {
 				DisplayName: streamer.DisplayName,
 				Priority:    i,
 				Online:      true, // Initialized to true since discovered as live
+				GameName:    streamer.GameName,
+				Title:       streamer.Title,
 			})
 		}
 	}

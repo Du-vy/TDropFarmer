@@ -94,10 +94,16 @@ func (c Client) GetLiveStreams(ctx context.Context, gameName string, limit int) 
 		if edge.Node.Broadcaster == nil {
 			continue
 		}
+		var gameName string
+		if edge.Node.Game != nil {
+			gameName = edge.Node.Game.Name
+		}
 		streamers = append(streamers, domain.Streamer{
 			ID:          edge.Node.Broadcaster.ID,
 			Login:       edge.Node.Broadcaster.Login,
 			DisplayName: edge.Node.Broadcaster.DisplayName,
+			GameName:    gameName,
+			Title:       edge.Node.Title,
 		})
 	}
 
@@ -110,11 +116,16 @@ type gameDirectoryResponse struct {
 			Edges []struct {
 				Node struct {
 					ID          string `json:"id"`
+					Title       string `json:"title"`
 					Broadcaster *struct {
 						ID          string `json:"id"`
 						Login       string `json:"login"`
 						DisplayName string `json:"displayName"`
 					} `json:"broadcaster"`
+					Game *struct {
+						ID   string `json:"id"`
+						Name string `json:"name"`
+					} `json:"game"`
 				} `json:"node"`
 			} `json:"edges"`
 		} `json:"streams"`
