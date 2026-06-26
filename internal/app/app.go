@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"math/rand/v2"
+
 	"github.com/Du-vy/TDropFarmer/internal/auth"
 	"github.com/Du-vy/TDropFarmer/internal/config"
 	"github.com/Du-vy/TDropFarmer/internal/domain"
@@ -37,6 +39,14 @@ type App struct {
 	activeGamesMu    sync.RWMutex
 	activeGames      []string
 	userID           string
+}
+
+func randomDuration(min, max time.Duration) time.Duration {
+	if min >= max {
+		return min
+	}
+	diff := max - min
+	return min + time.Duration(rand.Int64N(int64(diff)))
 }
 
 func New(cfg config.Config, logger *slog.Logger, tokenStore auth.TokenStore) *App {
@@ -252,14 +262,14 @@ func (a *App) pollDrops(ctx context.Context, eng *engine.Engine, invClient inven
 	// First check immediately at startup
 	a.checkAndClaimDrops(ctx, eng, invClient)
 
-	ticker := time.NewTicker(15 * time.Minute)
-	defer ticker.Stop()
-
 	for {
+		nextInterval := randomDuration(12*time.Minute, 18*time.Minute)
+		timer := time.NewTimer(nextInterval)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			a.checkAndClaimDrops(ctx, eng, invClient)
 		}
 	}
@@ -440,9 +450,17 @@ func (a *App) discoverGamesStreamers(ctx context.Context, client discovery.Clien
 	}
 
 	activeGamesCount := 0
-	for _, game := range gamesToDiscover {
+	for i, game := range gamesToDiscover {
 		if useFallbackAllCampaigns && activeGamesCount >= 1 {
 			break
+		}
+
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(randomDuration(500*time.Millisecond, 1500*time.Millisecond)):
+			}
 		}
 
 		a.logger.Debug("discovering live streams for game", slog.String("game", game))
@@ -469,15 +487,15 @@ func (a *App) discoverGamesStreamers(ctx context.Context, client discovery.Clien
 
 func (a *App) pollGameStreams(ctx context.Context, eng *engine.Engine, gqlClient gql.Client) {
 	discClient := discovery.Client{Client: gqlClient}
-	interval := 5 * time.Minute
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
 
 	for {
+		nextInterval := randomDuration(4*time.Minute, 6*time.Minute)
+		timer := time.NewTimer(nextInterval)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			a.logger.Info("polling games discovery")
 			discovered, err := a.discoverGamesStreamers(ctx, discClient)
 			if err != nil {
@@ -502,17 +520,16 @@ func (a *App) pollGameStreams(ctx context.Context, eng *engine.Engine, gqlClient
 }
 
 func (a *App) pollOnlineStatus(ctx context.Context, eng *engine.Engine, client *twitch.Client) {
-	interval := 60 * time.Second
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
 	online := make(map[string]bool)
 
 	for {
+		nextInterval := randomDuration(50*time.Second, 70*time.Second)
+		timer := time.NewTimer(nextInterval)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			streamers := a.getCombinedStreamers()
 			if len(streamers) == 0 {
 				continue
@@ -608,14 +625,14 @@ func (a *App) runMinuteWatched(ctx context.Context, eng *engine.Engine, gqlClien
 
 	a.logger.Info("watch telemetry configured", slog.String("transport", "graphql_send_spade_events"))
 
-	ticker := time.NewTicker(60 * time.Second)
-	defer ticker.Stop()
-
 	for {
+		nextInterval := randomDuration(55*time.Second, 65*time.Second)
+		timer := time.NewTimer(nextInterval)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			active := eng.ActiveStreamers()
 			for _, login := range active {
 				s := a.findCombinedStreamer(login)
@@ -655,18 +672,19 @@ func (a *App) isActiveDropGame(gameName string) bool {
 }
 
 func (a *App) pollChannelPoints(ctx context.Context, eng *engine.Engine, loader channelpoints.ContextLoader) {
-	interval := time.Duration(a.config.Watch.TickSeconds) * time.Second
-	if interval < time.Minute {
-		interval = time.Minute
+	baseInterval := time.Duration(a.config.Watch.TickSeconds) * time.Second
+	if baseInterval < time.Minute {
+		baseInterval = time.Minute
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
 
 	for {
+		nextInterval := randomDuration(baseInterval-10*time.Second, baseInterval+10*time.Second)
+		timer := time.NewTimer(nextInterval)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			streamers := a.getStreamersToPoll(eng)
 			for _, event := range a.loadChannelPointEvents(ctx, loader, streamers) {
 				eng.SendEvent(event)
@@ -677,7 +695,15 @@ func (a *App) pollChannelPoints(ctx context.Context, eng *engine.Engine, loader 
 
 func (a *App) loadChannelPointEvents(ctx context.Context, loader channelpoints.ContextLoader, streamers []domain.Streamer) []engine.Event {
 	events := make([]engine.Event, 0, len(streamers)*2)
-	for _, streamer := range streamers {
+	for i, streamer := range streamers {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return events
+			case <-time.After(randomDuration(1*time.Second, 3*time.Second)):
+			}
+		}
+
 		pointsContext, err := loader.Load(ctx, streamer.Login, streamer.ID)
 		if err != nil {
 			a.logger.Warn("load channel points context failed",
