@@ -619,6 +619,11 @@ func (a *App) runMinuteWatched(ctx context.Context, eng *engine.Engine, gqlClien
 	fetcher := playback.TokenFetcher{Client: gqlClient}
 	watcher := playback.NewWatcher(fetcher)
 
+	// Dynamically discover the active spade URL at startup to be resilient to Twitch updates
+	spadeURL := playback.DiscoverSpadeURL(ctx)
+	watcher.SetSpadeURL(spadeURL)
+	a.logger.Info("discovered spade telemetry endpoint", slog.String("url", spadeURL))
+
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
