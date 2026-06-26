@@ -21,11 +21,11 @@ type AuthConfig struct {
 }
 
 type WatchConfig struct {
-	Priorities         []string `json:"priorities"`
-	TickSeconds        int      `json:"tick_seconds"`
-	Games              []string `json:"games"`
-	AllCampaigns       bool     `json:"all_campaigns"`
-	AutoStartCampaigns bool     `json:"auto_start_campaigns"`
+	Priorities           []string `json:"priorities"`
+	TickSeconds          int      `json:"tick_seconds"`
+	PriorityGames        []string `json:"priority_games"`
+	FallbackAllCampaigns bool     `json:"fallback_all_campaigns"`
+	AutoStartCampaigns   bool     `json:"auto_start_campaigns"`
 }
 
 type FeatureConfig struct {

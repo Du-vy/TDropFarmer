@@ -5,8 +5,8 @@
   "watch": {
     "priorities": ["streak", "order"],
     "tick_seconds": 20,
-    "games": ["Smite", "Destiny 2"],
-    "all_campaigns": false,
+    "priority_games": ["Smite", "Destiny 2"],
+    "fallback_all_campaigns": false,
     "auto_start_campaigns": false
   },
   "features": {

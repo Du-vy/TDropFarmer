@@ -191,7 +191,11 @@ func (c *ConsoleHandler) Handle(_ context.Context, r slog.Record) error {
 		if isStatic {
 			tag = "\033[35m[📌 STATIC]\033[0m"
 		}
-		formattedMsg = fmt.Sprintf("%s ▶ \033[32m\033[1mWatching\033[0m \033[36m%v\033[0m playing \033[33m%v\033[0m \033[90m(%v)\033[0m", tag, login, game, title)
+		pointsStr := ""
+		if points := attrs["points"]; points != nil {
+			pointsStr = fmt.Sprintf(" | points: \033[33m%v\033[0m", points)
+		}
+		formattedMsg = fmt.Sprintf("%s ▶ \033[32m\033[1mWatching\033[0m \033[36m%v\033[0m playing \033[33m%v\033[0m \033[90m(%v)\033[0m%s", tag, login, game, title, pointsStr)
 
 	case "stop watching":
 		login := attrs["login"]

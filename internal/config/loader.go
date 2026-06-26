@@ -81,7 +81,7 @@ func Normalize(cfg *Config) {
 	for i := range cfg.Streamers {
 		cfg.Streamers[i].Login = normalizeLogin(cfg.Streamers[i].Login)
 	}
-	for i := range cfg.Watch.Games {
-		cfg.Watch.Games[i] = strings.TrimSpace(cfg.Watch.Games[i])
+	for i := range cfg.Watch.PriorityGames {
+		cfg.Watch.PriorityGames[i] = strings.TrimSpace(cfg.Watch.PriorityGames[i])
 	}
 }

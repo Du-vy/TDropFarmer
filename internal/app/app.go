@@ -122,48 +122,21 @@ func (a *App) Run(ctx context.Context) error {
 	var initialActiveGames []string
 	if a.config.Features.ClaimDropsEnabled() {
 		inventoryClient := inventory.Client{Client: gqlClient}
-		var activeGamesList []string
-
-		// 1. Fetch in-progress uncompleted campaigns
 		drops, errInv := inventoryClient.GetInventory(ctx)
-		inProgressMap := make(map[string]bool)
 		if errInv != nil {
 			a.logger.Warn("initial inventory fetch failed", slog.String("error", errInv.Error()))
 		} else {
-			for _, drop := range drops {
-				if drop.IsEarnable && drop.GameName != "" {
-					if !inProgressMap[drop.GameName] {
-						inProgressMap[drop.GameName] = true
-						activeGamesList = append(activeGamesList, drop.GameName)
-					}
-				}
-			}
+			initialActiveGames = a.sortActiveGames(ctx, inventoryClient, drops)
 		}
-
-		// 2. Fetch all other active campaigns if auto_start is enabled
-		if a.config.Watch.AllCampaigns && a.config.Watch.AutoStartCampaigns {
-			availableCampaignGames, err := inventoryClient.GetActiveCampaignGames(ctx)
-			if err != nil {
-				a.logger.Warn("initial active campaign games fetch failed", slog.String("error", err.Error()))
-			} else {
-				for _, game := range availableCampaignGames {
-					if !inProgressMap[game] && game != "" {
-						activeGamesList = append(activeGamesList, game)
-					}
-				}
-			}
-		}
-
-		initialActiveGames = activeGamesList
 		a.activeGamesMu.Lock()
 		a.activeGames = initialActiveGames
 		a.activeGamesMu.Unlock()
 	}
 
-	hasGamesConfigured := len(a.config.Watch.Games) > 0
-	useAllCampaigns := a.config.Watch.AllCampaigns && a.config.Features.ClaimDropsEnabled()
+	hasGamesConfigured := len(a.config.Watch.PriorityGames) > 0
+	useFallbackAllCampaigns := a.config.Watch.FallbackAllCampaigns && a.config.Features.ClaimDropsEnabled()
 
-	if hasGamesConfigured || useAllCampaigns {
+	if hasGamesConfigured || useFallbackAllCampaigns {
 		discClient := discovery.Client{Client: gqlClient}
 		a.logger.Info("performing initial games discovery")
 		discovered, err := a.discoverGamesStreamers(ctx, discClient)
@@ -216,7 +189,7 @@ func (a *App) Run(ctx context.Context) error {
 		a.runMinuteWatched(ctx, eng, gqlClient)
 	}()
 
-	if len(a.config.Watch.Games) > 0 || useAllCampaigns {
+	if len(a.config.Watch.PriorityGames) > 0 || useFallbackAllCampaigns {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -361,25 +334,7 @@ func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invCli
 		}
 	}
 
-	var activeGames []string
-	inProgressMap := make(map[string]bool)
-	for game := range activeGamesMap {
-		inProgressMap[game] = true
-		activeGames = append(activeGames, game)
-	}
-
-	if a.config.Watch.AllCampaigns && a.config.Watch.AutoStartCampaigns {
-		availableCampaignGames, err := invClient.GetActiveCampaignGames(ctx)
-		if err != nil {
-			a.logger.Warn("fetch active campaign games failed", slog.String("error", err.Error()))
-		} else {
-			for _, game := range availableCampaignGames {
-				if !inProgressMap[game] && game != "" {
-					activeGames = append(activeGames, game)
-				}
-			}
-		}
-	}
+	activeGames := a.sortActiveGames(ctx, invClient, drops)
 
 	a.activeGamesMu.Lock()
 	a.activeGames = activeGames
@@ -473,19 +428,19 @@ func (a *App) discoverGamesStreamers(ctx context.Context, client discovery.Clien
 	a.streamersMu.RUnlock()
 
 	var gamesToDiscover []string
-	useAllCampaigns := a.config.Watch.AllCampaigns && a.config.Features.ClaimDropsEnabled()
-	if useAllCampaigns {
+	useFallbackAllCampaigns := a.config.Watch.FallbackAllCampaigns && a.config.Features.ClaimDropsEnabled()
+	if useFallbackAllCampaigns {
 		a.activeGamesMu.RLock()
 		gamesToDiscover = make([]string, len(a.activeGames))
 		copy(gamesToDiscover, a.activeGames)
 		a.activeGamesMu.RUnlock()
 	} else {
-		gamesToDiscover = a.config.Watch.Games
+		gamesToDiscover = a.config.Watch.PriorityGames
 	}
 
 	activeGamesCount := 0
 	for _, game := range gamesToDiscover {
-		if useAllCampaigns && activeGamesCount >= 1 {
+		if useFallbackAllCampaigns && activeGamesCount >= 1 {
 			break
 		}
 
@@ -810,4 +765,82 @@ func (a *App) shouldJoinChat(login string) bool {
 		}
 	}
 	return a.config.Features.ChatEnabled()
+}
+
+func (a *App) isPriorityGame(gameName string) bool {
+	for _, pg := range a.config.Watch.PriorityGames {
+		if strings.EqualFold(pg, gameName) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, drops []inventory.Drop) []string {
+	// Categorize in-progress games
+	var priorityInProgress []string
+	var otherInProgress []string
+	inProgressMap := make(map[string]bool)
+
+	for _, drop := range drops {
+		if drop.IsEarnable && drop.GameName != "" {
+			if !inProgressMap[drop.GameName] {
+				inProgressMap[drop.GameName] = true
+				if a.isPriorityGame(drop.GameName) {
+					priorityInProgress = append(priorityInProgress, drop.GameName)
+				} else {
+					otherInProgress = append(otherInProgress, drop.GameName)
+				}
+			}
+		}
+	}
+
+	// Categorize available games
+	var priorityAvailable []string
+	var otherAvailable []string
+
+	if a.config.Watch.AutoStartCampaigns {
+		availableCampaignGames, err := invClient.GetActiveCampaignGames(ctx)
+		if err != nil {
+			a.logger.Warn("fetch active campaign games failed", slog.String("error", err.Error()))
+		} else {
+			for _, game := range availableCampaignGames {
+				if game == "" || inProgressMap[game] {
+					continue
+				}
+				if a.isPriorityGame(game) {
+					priorityAvailable = append(priorityAvailable, game)
+				} else {
+					otherAvailable = append(otherAvailable, game)
+				}
+			}
+		}
+	}
+
+	var sortedGames []string
+	useFallbackAllCampaigns := a.config.Watch.FallbackAllCampaigns && a.config.Features.ClaimDropsEnabled()
+
+	if useFallbackAllCampaigns {
+		sortedGames = append(sortedGames, priorityInProgress...)
+		sortedGames = append(sortedGames, priorityAvailable...)
+		sortedGames = append(sortedGames, otherInProgress...)
+		sortedGames = append(sortedGames, otherAvailable...)
+	} else {
+		sortedGames = append(sortedGames, priorityInProgress...)
+		sortedGames = append(sortedGames, priorityAvailable...)
+		for _, pg := range a.config.Watch.PriorityGames {
+			found := false
+			for _, g := range sortedGames {
+				if strings.EqualFold(g, pg) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				sortedGames = append(sortedGames, pg)
+			}
+		}
+	}
+
+	return sortedGames
 }

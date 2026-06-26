@@ -152,6 +152,7 @@ func (e *Engine) reschedule() {
 			slog.String("game", state.GameName),
 			slog.String("title", state.Title),
 			slog.Bool("is_static", state.IsStatic),
+			slog.Int64("points", state.Points),
 		)
 		e.emit(Event{
 			Type:      EventOnline,
@@ -276,7 +277,7 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		case EventBalance:
 			if balance, ok := balanceFromPayload(event.Payload); ok {
 				e.streamers[i].Points = balance
-				e.logger.Info("points balance loaded",
+				e.logger.Debug("points balance loaded",
 					slog.String("streamer", state.Login),
 					slog.Int64("balance", balance),
 				)
@@ -403,7 +404,7 @@ func (e *Engine) handleBonusAvailable(ctx context.Context, event Event) {
 		}
 	}
 
-	e.logger.Info("bonus claimed",
+	e.logger.Debug("bonus claimed",
 		slog.String("streamer", result.StreamerLogin),
 		slog.String("claim_id", result.ClaimID),
 		slog.Int64("points", result.Points),
