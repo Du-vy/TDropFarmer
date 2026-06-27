@@ -19,6 +19,17 @@ func TestRankStreakFirst(t *testing.T) {
 		t.Fatalf("first = %q, want b", ranked[0].Login)
 	}
 }
+
+func TestRankWatchingFirst(t *testing.T) {
+	states := []StreamerState{
+		{Login: "a", Watching: false, Priority: 0, GameName: "GameA", Online: true},
+		{Login: "b", Watching: true, Priority: 5, GameName: "GameA", Online: true},
+	}
+	ranked := rankStreamers(states)
+	if ranked[0].Login != "b" {
+		t.Fatalf("first = %q, want b (currently watching)", ranked[0].Login)
+	}
+}
 func TestSelectActive(t *testing.T) {
 	states := []StreamerState{
 		{Login: "a", StreakReady: true, Priority: 0, Online: true, GameName: "GameA"},

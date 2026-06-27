@@ -234,6 +234,56 @@ func TestGetActiveCampaignGamesSkipsCompletedCampaigns(t *testing.T) {
 	}
 }
 
+func TestGetActiveCampaignGamesSkipsNilPreconditions(t *testing.T) {
+	dashboard := []byte(`{
+		"currentUser": {
+			"dropCampaigns": [
+				{"id": "rocketleague", "status": "ACTIVE", "game": {"displayName": "Rocket League"}},
+				{"id": "overwatch", "status": "ACTIVE", "game": {"displayName": "Overwatch"}}
+			]
+		}
+	}`)
+	nilPreconditionsRL := []byte(`{
+		"user": {"dropCampaign": {
+			"id": "rocketleague",
+			"status": "ACTIVE",
+			"self": {"isAccountConnected": true},
+			"game": {"displayName": "Rocket League"},
+			"timeBasedDrops": [
+				{"requiredMinutesWatched": 60, "self": {"isClaimed": false}}
+			]
+		}}
+	}`)
+	earnableOverwatch := []byte(`{
+		"user": {"dropCampaign": {
+			"id": "overwatch",
+			"status": "ACTIVE",
+			"self": {"isAccountConnected": true},
+			"game": {"displayName": "Overwatch"},
+			"timeBasedDrops": [
+				{"requiredMinutesWatched": 60, "self": {"hasPreconditionsMet": true, "isClaimed": false}}
+			]
+		}}
+	}`)
+
+	client := campaignGamesGQLClient{
+		dashboard: dashboard,
+		details: map[string][]byte{
+			"rocketleague": nilPreconditionsRL,
+			"overwatch":    earnableOverwatch,
+		},
+	}
+	games, err := Client{Client: client, UserID: "805921782"}.GetActiveCampaignGames(context.Background())
+	if err != nil {
+		t.Fatalf("GetActiveCampaignGames returned error: %v", err)
+	}
+
+	expected := []string{"Overwatch"}
+	if len(games) != len(expected) {
+		t.Fatalf("expected %v, got %v", expected, games)
+	}
+}
+
 func TestClientGraphQLRequired(t *testing.T) {
 	_, err := Client{}.GetInventory(context.Background())
 	if err == nil {

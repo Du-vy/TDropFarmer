@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -31,6 +32,7 @@ type GQLClient interface {
 type Client struct {
 	Client GQLClient
 	UserID string
+	Logger *slog.Logger
 }
 
 type Drop struct {
@@ -309,7 +311,27 @@ func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		if !campaignDetailEarnable(time.Now().UTC(), detail) {
+		earnable := campaignDetailEarnable(time.Now().UTC(), detail)
+		if c.Logger != nil {
+			var dropSummary []string
+			if detail != nil && detail.User != nil && detail.User.DropCampaign != nil {
+				for _, d := range detail.User.DropCampaign.TimeBasedDrops {
+					claimed := d.Self.IsClaimed
+					preconditions := "nil"
+					if d.Self.HasPreconditionsMet != nil {
+						preconditions = fmt.Sprintf("%v", *d.Self.HasPreconditionsMet)
+					}
+					dropSummary = append(dropSummary, fmt.Sprintf("{min:%d,claimed:%v,preconditions:%s}", d.RequiredMinutesWatched, claimed, preconditions))
+				}
+			}
+			c.Logger.Debug("campaign detail check",
+				slog.String("campaign_id", campaign.ID),
+				slog.String("game", campaign.Game.DisplayName),
+				slog.Bool("earnable", earnable),
+				slog.String("drops", fmt.Sprintf("%v", dropSummary)),
+			)
+		}
+		if !earnable {
 			continue
 		}
 
@@ -359,7 +381,10 @@ func campaignDetailEarnable(now time.Time, data *campaignDetailsResponse) bool {
 		return false
 	}
 	for _, drop := range campaign.TimeBasedDrops {
-		if drop.RequiredMinutesWatched <= 0 || drop.Self.IsClaimed || !boolDefault(drop.Self.HasPreconditionsMet, true) {
+		if drop.RequiredMinutesWatched <= 0 || drop.Self.IsClaimed {
+			continue
+		}
+		if drop.Self.HasPreconditionsMet == nil || !*drop.Self.HasPreconditionsMet {
 			continue
 		}
 		if campaignDropActive(now, campaign.Status, campaign.StartAt, campaign.EndAt, drop.StartAt, drop.EndAt) {

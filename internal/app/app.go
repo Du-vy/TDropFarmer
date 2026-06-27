@@ -131,7 +131,7 @@ func (a *App) Run(ctx context.Context) error {
 	// Load initial active games from inventory or active campaigns if drops are enabled
 	var initialActiveGames []string
 	if a.config.Features.ClaimDropsEnabled() {
-		inventoryClient := inventory.Client{Client: gqlClient, UserID: a.userID}
+		inventoryClient := inventory.Client{Client: gqlClient, UserID: a.userID, Logger: a.logger}
 		drops, errInv := inventoryClient.GetInventory(ctx)
 		if errInv != nil {
 			a.logger.Warn("initial inventory fetch failed", slog.String("error", errInv.Error()))
@@ -208,7 +208,7 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	if a.config.Features.ClaimDropsEnabled() {
-		inventoryClient := inventory.Client{Client: gqlClient, UserID: a.userID}
+		inventoryClient := inventory.Client{Client: gqlClient, UserID: a.userID, Logger: a.logger}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -350,6 +350,8 @@ func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invCli
 	a.activeGamesMu.Lock()
 	a.activeGames = activeGames
 	a.activeGamesMu.Unlock()
+
+	a.logger.Info("active games updated", slog.Any("games", activeGames))
 
 	eng.SendEvent(engine.Event{
 		Type:    engine.EventActiveGames,
@@ -877,7 +879,6 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 		sortedGames = append(sortedGames, priorityInProgress...)
 		sortedGames = append(sortedGames, priorityAvailable...)
 		for _, pg := range a.config.Watch.PriorityGames {
-			// Skip priority games that are already fully completed (have drops, but none are unclaimed)
 			pgKey := gameKey(pg)
 			if hasAnyDrops[pgKey] && !hasUnclaimed[pgKey] {
 				continue
@@ -895,6 +896,21 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 			}
 		}
 	}
+
+	filtered := sortedGames[:0]
+	for _, game := range sortedGames {
+		key := gameKey(game)
+		if hasAnyDrops[key] && !hasUnclaimed[key] {
+			if a.logger != nil {
+				a.logger.Debug("excluding game with all drops claimed",
+					slog.String("game", game),
+				)
+			}
+			continue
+		}
+		filtered = append(filtered, game)
+	}
+	sortedGames = filtered
 
 	return sortedGames
 }

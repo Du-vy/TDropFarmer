@@ -17,6 +17,9 @@ func rankStreamers(states []StreamerState) []StreamerState {
 }
 
 func byStreamerRank(a, b StreamerState) bool {
+	if a.Watching != b.Watching {
+		return a.Watching
+	}
 	if a.StreakReady != b.StreakReady {
 		return a.StreakReady
 	}

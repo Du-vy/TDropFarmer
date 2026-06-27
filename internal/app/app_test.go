@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/Du-vy/TDropFarmer/internal/config"
@@ -218,6 +219,20 @@ func TestSortActiveGames(t *testing.T) {
 	for i, game := range expected {
 		if sorted[i] != game {
 			t.Errorf("at index %d: expected %q, got %q", i, game, sorted[i])
+		}
+	}
+
+	// 4. Case where FallbackAllCampaigns is true and a game has all drops claimed in inventory
+	app.config.Watch.PriorityGames = []string{"Corepunk", "Overwatch"}
+	app.config.Watch.FallbackAllCampaigns = true
+	drops = []inventory.Drop{
+		{GameName: "THE FINALS", IsEarnable: false, IsClaimed: true},
+		{GameName: "Corepunk", IsEarnable: true, IsClaimed: false},
+	}
+	sorted = app.sortActiveGames(context.Background(), invClient, drops)
+	for _, game := range sorted {
+		if strings.EqualFold(game, "THE FINALS") {
+			t.Errorf("THE FINALS should be excluded when all drops are claimed, got sorted = %v", sorted)
 		}
 	}
 }
