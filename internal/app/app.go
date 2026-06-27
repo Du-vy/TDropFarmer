@@ -451,12 +451,7 @@ func (a *App) discoverGamesStreamers(ctx context.Context, client discovery.Clien
 		gamesToDiscover = a.config.Watch.PriorityGames
 	}
 
-	activeGamesCount := 0
 	for i, game := range gamesToDiscover {
-		if useFallbackAllCampaigns && activeGamesCount >= 1 {
-			break
-		}
-
 		if i > 0 {
 			select {
 			case <-ctx.Done():
@@ -472,16 +467,11 @@ func (a *App) discoverGamesStreamers(ctx context.Context, client discovery.Clien
 			continue
 		}
 
-		hasOnlineStream := false
 		for _, s := range streamers {
 			if !seen[s.Login] {
 				seen[s.Login] = true
 				combined = append(combined, s)
-				hasOnlineStream = true
 			}
-		}
-		if hasOnlineStream {
-			activeGamesCount++
 		}
 	}
 	return combined, nil

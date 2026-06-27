@@ -84,7 +84,8 @@ func (c Client) GetInventory(ctx context.Context) ([]Drop, error) {
 			}
 
 			isClaimable := !td.Self.IsClaimed && dropInstanceID != ""
-			isEarnable := !td.Self.IsClaimed && boolDefault(td.Self.HasPreconditionsMet, true) && campaignDropActive(now, campaign.Status, campaign.StartAt, campaign.EndAt, td.StartAt, td.EndAt)
+			preconditionsMet := td.Self.HasPreconditionsMet != nil && *td.Self.HasPreconditionsMet
+			isEarnable := !td.Self.IsClaimed && preconditionsMet && campaignDropActive(now, campaign.Status, campaign.StartAt, campaign.EndAt, td.StartAt, td.EndAt)
 
 			drops = append(drops, Drop{
 				ID:              td.ID,
@@ -137,13 +138,6 @@ func parseTwitchTime(value string) (time.Time, error) {
 		return time.Time{}, err
 	}
 	return parsed.UTC(), nil
-}
-
-func boolDefault(value *bool, fallback bool) bool {
-	if value == nil {
-		return fallback
-	}
-	return *value
 }
 
 func (c Client) ClaimDrop(ctx context.Context, dropInstanceID string) (bool, error) {

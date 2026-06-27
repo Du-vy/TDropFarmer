@@ -284,6 +284,45 @@ func TestGetActiveCampaignGamesSkipsNilPreconditions(t *testing.T) {
 	}
 }
 
+func TestGetInventoryNilPreconditionsNotEarnable(t *testing.T) {
+	mockResponse := `{"currentUser":{"inventory":{"dropCampaignsInProgress":[
+		{
+			"id": "campaign-1",
+			"name": "Campaign 1",
+			"status": "ACTIVE",
+			"startAt": "2099-01-01T00:00:00Z",
+			"endAt": "2099-12-31T00:00:00Z",
+			"game": {"id": "game-1", "name": "Game 1", "slug": "game-1"},
+			"timeBasedDrops": [
+				{
+					"id": "drop-1",
+					"name": "Drop 1",
+					"startAt": "2099-01-01T00:00:00Z",
+					"endAt": "2099-12-31T00:00:00Z",
+					"requiredMinutesWatched": 60,
+					"self": {
+						"currentMinutesWatched": 31,
+						"dropInstanceID": null,
+						"isClaimed": false
+					}
+				}
+			]
+		}
+	]}}}`
+
+	client := &recordingGQLClient{response: gql.Response{Data: json.RawMessage(mockResponse)}}
+	drops, err := Client{Client: client}.GetInventory(context.Background())
+	if err != nil {
+		t.Fatalf("GetInventory returned error: %v", err)
+	}
+	if len(drops) != 1 {
+		t.Fatalf("expected 1 drop, got %d", len(drops))
+	}
+	if drops[0].IsEarnable {
+		t.Fatalf("drop with nil hasPreconditionsMet should not be earnable: %+v", drops[0])
+	}
+}
+
 func TestClientGraphQLRequired(t *testing.T) {
 	_, err := Client{}.GetInventory(context.Background())
 	if err == nil {
