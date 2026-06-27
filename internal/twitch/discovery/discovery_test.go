@@ -89,3 +89,69 @@ func TestGetLiveStreams(t *testing.T) {
 		t.Errorf("got %v, want %v", streamers, expected)
 	}
 }
+
+func TestGetLiveStreamsUsesRedirectedSlug(t *testing.T) {
+	redirectResponse := `{"game":{"slug":"overwatch-2"}}`
+	directoryResponse := `{
+		"game": {
+			"streams": {
+				"edges": [
+					{
+						"node": {
+							"id": "stream-1",
+							"title": "Drops enabled",
+							"broadcaster": {
+								"id": "999",
+								"login": "owstreamer",
+								"displayName": "OWStreamer"
+							},
+							"game": {
+								"id": "488552",
+								"name": "Overwatch 2"
+							}
+						}
+					}
+				]
+			}
+		}
+	}`
+
+	var operations []string
+	client := Client{
+		Client: mockGQLClient{
+			doFunc: func(ctx context.Context, req gql.Request) (gql.Response, error) {
+				operations = append(operations, req.OperationName)
+				switch req.OperationName {
+				case gameRedirectOperation:
+					name, _ := req.Variables["name"].(string)
+					if name != "Overwatch" {
+						return gql.Response{}, fmt.Errorf("expected redirect name 'Overwatch', got %q", name)
+					}
+					return gql.Response{Data: json.RawMessage(redirectResponse)}, nil
+				case gameDirectoryOperation:
+					slug, _ := req.Variables["slug"].(string)
+					if slug != "overwatch-2" {
+						return gql.Response{}, fmt.Errorf("expected slug 'overwatch-2', got %q", slug)
+					}
+					return gql.Response{Data: json.RawMessage(directoryResponse)}, nil
+				default:
+					return gql.Response{}, fmt.Errorf("unexpected operation %q", req.OperationName)
+				}
+			},
+		},
+	}
+
+	streamers, err := client.GetLiveStreams(context.Background(), "Overwatch", 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(operations, []string{gameRedirectOperation, gameDirectoryOperation}) {
+		t.Fatalf("unexpected operation order: %v", operations)
+	}
+	expected := []domain.Streamer{
+		{ID: "999", Login: "owstreamer", DisplayName: "OWStreamer", GameID: "488552", GameName: "Overwatch 2", Title: "Drops enabled", BroadcastID: "stream-1"},
+	}
+	if !reflect.DeepEqual(streamers, expected) {
+		t.Errorf("got %v, want %v", streamers, expected)
+	}
+}

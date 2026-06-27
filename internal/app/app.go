@@ -147,7 +147,7 @@ func (a *App) Run(ctx context.Context) error {
 	useFallbackAllCampaigns := a.config.Watch.FallbackAllCampaigns && a.config.Features.ClaimDropsEnabled()
 
 	if hasGamesConfigured || useFallbackAllCampaigns {
-		discClient := discovery.Client{Client: gqlClient}
+		discClient := discovery.Client{Client: gqlClient, Logger: a.logger}
 		a.logger.Info("performing initial games discovery")
 		discovered, err := a.discoverGamesStreamers(ctx, discClient)
 		if err != nil {
@@ -478,7 +478,7 @@ func (a *App) discoverGamesStreamers(ctx context.Context, client discovery.Clien
 }
 
 func (a *App) pollGameStreams(ctx context.Context, eng *engine.Engine, gqlClient gql.Client) {
-	discClient := discovery.Client{Client: gqlClient}
+	discClient := discovery.Client{Client: gqlClient, Logger: a.logger}
 
 	for {
 		nextInterval := randomDuration(4*time.Minute, 6*time.Minute)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 
@@ -14,6 +15,9 @@ import (
 const (
 	gameDirectoryOperation = "DirectoryPage_Game"
 	gameDirectoryHash      = "cb5dc816e139dcb8a118f14b4b677d59abc224a4b016c4bc2bb00a47fe0ddec4"
+
+	gameRedirectOperation = "DirectoryGameRedirect"
+	gameRedirectHash      = "1f0300090caceec51f33c5e20647aceff9017f740f223c3c532ba6fa59f6b6cc"
 )
 
 type GQLClient interface {
@@ -22,6 +26,7 @@ type GQLClient interface {
 
 type Client struct {
 	Client GQLClient
+	Logger *slog.Logger
 }
 
 var (
@@ -46,6 +51,9 @@ func (c Client) GetLiveStreams(ctx context.Context, gameName string, limit int) 
 	slug := Slugify(gameName)
 	if slug == "" {
 		return nil, fmt.Errorf("invalid game name %q resulting in empty slug", gameName)
+	}
+	if resolved, err := c.resolveGameSlug(ctx, gameName); err == nil && resolved != "" {
+		slug = resolved
 	}
 
 	response, err := c.Client.Do(ctx, gql.Request{
@@ -86,6 +94,12 @@ func (c Client) GetLiveStreams(ctx context.Context, gameName string, limit int) 
 	}
 
 	if data.Game == nil {
+		if c.Logger != nil {
+			c.Logger.Info("game discovery found no directory entry",
+				slog.String("game", gameName),
+				slog.String("slug", slug),
+			)
+		}
 		return nil, nil
 	}
 
@@ -110,7 +124,41 @@ func (c Client) GetLiveStreams(ctx context.Context, gameName string, limit int) 
 		})
 	}
 
+	if len(streamers) == 0 && c.Logger != nil {
+		c.Logger.Info("game discovery found no drop-enabled streams",
+			slog.String("game", gameName),
+			slog.String("slug", slug),
+		)
+	}
+
 	return streamers, nil
+}
+
+func (c Client) resolveGameSlug(ctx context.Context, gameName string) (string, error) {
+	response, err := c.Client.Do(ctx, gql.Request{
+		OperationName: gameRedirectOperation,
+		Variables: map[string]any{
+			"name": gameName,
+		},
+		Extensions: map[string]any{
+			"persistedQuery": map[string]any{
+				"version":    1,
+				"sha256Hash": gameRedirectHash,
+			},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+
+	var data gameRedirectResponse
+	if err := json.Unmarshal(response.Data, &data); err != nil {
+		return "", fmt.Errorf("decode game redirect response: %w", err)
+	}
+	if data.Game == nil {
+		return "", nil
+	}
+	return data.Game.Slug, nil
 }
 
 type gameDirectoryResponse struct {
@@ -132,5 +180,11 @@ type gameDirectoryResponse struct {
 				} `json:"node"`
 			} `json:"edges"`
 		} `json:"streams"`
+	} `json:"game"`
+}
+
+type gameRedirectResponse struct {
+	Game *struct {
+		Slug string `json:"slug"`
 	} `json:"game"`
 }
