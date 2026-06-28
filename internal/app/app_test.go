@@ -2,10 +2,13 @@ package app
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/Du-vy/TDropFarmer/internal/config"
+	"github.com/Du-vy/TDropFarmer/internal/domain"
 	"github.com/Du-vy/TDropFarmer/internal/engine"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/channelpoints"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/gql"
@@ -306,6 +309,67 @@ func TestSortActiveGamesPrioritizesConnectedOverUnconnected(t *testing.T) {
 	for i, game := range expected {
 		if sorted[i] != game {
 			t.Errorf("at index %d: expected %q, got %q", i, game, sorted[i])
+		}
+	}
+}
+
+type fakeGameDiscoverer struct {
+	calls     []string
+	streamers map[string][]domain.Streamer
+}
+
+func (f *fakeGameDiscoverer) GetLiveStreams(ctx context.Context, gameName string, limit int) ([]domain.Streamer, error) {
+	f.calls = append(f.calls, gameName)
+	return f.streamers[gameName], nil
+}
+
+func TestDiscoverGamesStreamersStopsAtFirstGameWithStreams(t *testing.T) {
+	app := &App{
+		config: config.Config{
+			Watch: config.WatchConfig{
+				FallbackAllCampaigns: true,
+			},
+			Features: config.FeatureConfig{
+				ClaimDrops: config.Bool(true),
+			},
+		},
+		activeGames: []string{"No Streams", "Target Game", "Later Game"},
+		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	discoverer := &fakeGameDiscoverer{
+		streamers: map[string][]domain.Streamer{
+			"Target Game": {
+				{ID: "1", Login: "target_one", GameName: "Target Game"},
+				{ID: "2", Login: "target_two", GameName: "Target Game"},
+			},
+			"Later Game": {
+				{ID: "3", Login: "later_one", GameName: "Later Game"},
+			},
+		},
+	}
+
+	streamers, err := app.discoverGamesStreamers(context.Background(), discoverer)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expectedCalls := []string{"No Streams", "Target Game"}
+	if len(discoverer.calls) != len(expectedCalls) {
+		t.Fatalf("expected calls %v, got %v", expectedCalls, discoverer.calls)
+	}
+	for i, expected := range expectedCalls {
+		if discoverer.calls[i] != expected {
+			t.Fatalf("expected calls %v, got %v", expectedCalls, discoverer.calls)
+		}
+	}
+
+	if len(streamers) != 2 {
+		t.Fatalf("expected 2 streamers, got %d (%v)", len(streamers), streamers)
+	}
+	for _, streamer := range streamers {
+		if streamer.GameName != "Target Game" {
+			t.Fatalf("expected only target game streamers, got %v", streamers)
 		}
 	}
 }

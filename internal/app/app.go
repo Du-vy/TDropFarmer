@@ -41,6 +41,10 @@ type App struct {
 	userID           string
 }
 
+type gameStreamDiscoverer interface {
+	GetLiveStreams(ctx context.Context, gameName string, limit int) ([]domain.Streamer, error)
+}
+
 func randomDuration(min, max time.Duration) time.Duration {
 	if min >= max {
 		return min
@@ -148,7 +152,7 @@ func (a *App) Run(ctx context.Context) error {
 
 	if hasGamesConfigured || useFallbackAllCampaigns {
 		discClient := discovery.Client{Client: gqlClient, Logger: a.logger}
-		a.logger.Info("performing initial games discovery")
+		a.logger.Info("performing initial target game discovery")
 		discovered, err := a.discoverGamesStreamers(ctx, discClient)
 		if err != nil {
 			a.logger.Warn("initial games discovery failed", slog.String("error", err.Error()))
@@ -430,8 +434,7 @@ func (a *App) findCombinedStreamer(login string) *domain.Streamer {
 	return nil
 }
 
-func (a *App) discoverGamesStreamers(ctx context.Context, client discovery.Client) ([]domain.Streamer, error) {
-	var combined []domain.Streamer
+func (a *App) discoverGamesStreamers(ctx context.Context, client gameStreamDiscoverer) ([]domain.Streamer, error) {
 	seen := make(map[string]bool)
 
 	a.streamersMu.RLock()
@@ -466,15 +469,25 @@ func (a *App) discoverGamesStreamers(ctx context.Context, client discovery.Clien
 			a.logger.Warn("discover game streams failed", slog.String("game", game), slog.String("error", err.Error()))
 			continue
 		}
+		if len(streamers) == 0 {
+			continue
+		}
 
+		var targetStreamers []domain.Streamer
 		for _, s := range streamers {
 			if !seen[s.Login] {
 				seen[s.Login] = true
-				combined = append(combined, s)
+				targetStreamers = append(targetStreamers, s)
 			}
 		}
+
+		a.logger.Info("game discovery selected target",
+			slog.String("game", game),
+			slog.Int("count", len(targetStreamers)),
+		)
+		return targetStreamers, nil
 	}
-	return combined, nil
+	return nil, nil
 }
 
 func (a *App) pollGameStreams(ctx context.Context, eng *engine.Engine, gqlClient gql.Client) {
@@ -488,7 +501,7 @@ func (a *App) pollGameStreams(ctx context.Context, eng *engine.Engine, gqlClient
 			timer.Stop()
 			return
 		case <-timer.C:
-			a.logger.Info("polling games discovery")
+			a.logger.Info("polling target game discovery")
 			discovered, err := a.discoverGamesStreamers(ctx, discClient)
 			if err != nil {
 				a.logger.Warn("games discovery failed", slog.String("error", err.Error()))
@@ -499,7 +512,7 @@ func (a *App) pollGameStreams(ctx context.Context, eng *engine.Engine, gqlClient
 			a.dynamicStreamers = discovered
 			a.streamersMu.Unlock()
 
-			a.logger.Info("games discovery completed", slog.Int("count", len(discovered)))
+			a.logger.Info("target game discovery completed", slog.Int("count", len(discovered)))
 
 			combined := a.getCombinedStreamers()
 			eng.SendEvent(engine.Event{
