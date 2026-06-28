@@ -22,6 +22,7 @@ func (c *recordingGQLClient) Do(ctx context.Context, req gql.Request) (gql.Respo
 type campaignGamesGQLClient struct {
 	dashboard []byte
 	details   map[string][]byte
+	inventory []byte
 }
 
 func (c campaignGamesGQLClient) Do(ctx context.Context, req gql.Request) (gql.Response, error) {
@@ -31,6 +32,9 @@ func (c campaignGamesGQLClient) Do(ctx context.Context, req gql.Request) (gql.Re
 	if req.OperationName == campaignDetailsOperation {
 		id, _ := req.Variables["dropID"].(string)
 		return gql.Response{Data: c.details[id]}, nil
+	}
+	if req.OperationName == inventoryOperation {
+		return gql.Response{Data: c.inventory}, nil
 	}
 	return gql.Response{}, nil
 }
@@ -218,7 +222,7 @@ func TestGetActiveCampaignGamesSkipsCompletedCampaigns(t *testing.T) {
 			"overwatch": earnableOverwatch,
 		},
 	}
-	games, err := Client{Client: client, UserID: "805921782"}.GetActiveCampaignGames(context.Background())
+	games, unconnected, err := Client{Client: client, UserID: "805921782"}.GetActiveCampaignGames(context.Background())
 	if err != nil {
 		t.Fatalf("GetActiveCampaignGames returned error: %v", err)
 	}
@@ -226,6 +230,9 @@ func TestGetActiveCampaignGamesSkipsCompletedCampaigns(t *testing.T) {
 	expected := []string{"Overwatch"}
 	if len(games) != len(expected) {
 		t.Fatalf("expected %v, got %v", expected, games)
+	}
+	if len(unconnected) != 0 {
+		t.Fatalf("expected 0 unconnected games, got %v", unconnected)
 	}
 	for i := range expected {
 		if games[i] != expected[i] {
@@ -273,7 +280,7 @@ func TestGetActiveCampaignGamesAllowsNilPreconditions(t *testing.T) {
 			"overwatch":    earnableOverwatch,
 		},
 	}
-	games, err := Client{Client: client, UserID: "805921782"}.GetActiveCampaignGames(context.Background())
+	games, unconnected, err := Client{Client: client, UserID: "805921782"}.GetActiveCampaignGames(context.Background())
 	if err != nil {
 		t.Fatalf("GetActiveCampaignGames returned error: %v", err)
 	}
@@ -281,6 +288,9 @@ func TestGetActiveCampaignGamesAllowsNilPreconditions(t *testing.T) {
 	expected := []string{"Rocket League", "Overwatch"}
 	if len(games) != len(expected) {
 		t.Fatalf("expected %v, got %v", expected, games)
+	}
+	if len(unconnected) != 0 {
+		t.Fatalf("expected 0 unconnected games, got %v", unconnected)
 	}
 }
 
@@ -329,3 +339,60 @@ func TestClientGraphQLRequired(t *testing.T) {
 		t.Errorf("expected error from nil client")
 	}
 }
+
+func TestGetActiveCampaignGamesSkipsGlobalClaimedCampaigns(t *testing.T) {
+	dashboard := []byte(`{
+		"currentUser": {
+			"dropCampaigns": [
+				{"id": "rocketleague", "status": "ACTIVE", "game": {"displayName": "Rocket League"}}
+			]
+		}
+	}`)
+	rlDetails := []byte(`{
+		"user": {"dropCampaign": {
+			"id": "rocketleague",
+			"status": "ACTIVE",
+			"startAt": "2026-06-26T16:00:00Z",
+			"endAt": "2026-06-29T03:59:59.999Z",
+			"self": {"isAccountConnected": true},
+			"game": {"displayName": "Rocket League"},
+			"timeBasedDrops": [
+				{
+					"startAt": "2026-06-26T16:00:00Z",
+					"endAt": "2026-06-29T03:59:59.999Z",
+					"requiredMinutesWatched": 60,
+					"benefitEdges": [
+						{"benefit": {"name": "RLCS 2025 Exotic Drop"}}
+					],
+					"self": {"hasPreconditionsMet": true, "isClaimed": false}
+				}
+			]
+		}}
+	}`)
+	inventoryResp := []byte(`{
+		"currentUser": {
+			"inventory": {
+				"gameEventDrops": [
+					{"name": "RLCS 2025 Exotic Drop", "lastAwardedAt": "2026-06-26T21:31:01Z"}
+				]
+			}
+		}
+	}`)
+
+	client := campaignGamesGQLClient{
+		dashboard: dashboard,
+		details: map[string][]byte{
+			"rocketleague": rlDetails,
+		},
+		inventory: inventoryResp,
+	}
+	games, unconnected, err := Client{Client: client, UserID: "805921782"}.GetActiveCampaignGames(context.Background())
+	if err != nil {
+		t.Fatalf("GetActiveCampaignGames returned error: %v", err)
+	}
+
+	if len(games) != 0 || len(unconnected) != 0 {
+		t.Fatalf("expected 0 games, got connected:%v unconnected:%v", games, unconnected)
+	}
+}
+

@@ -236,3 +236,76 @@ func TestSortActiveGames(t *testing.T) {
 		}
 	}
 }
+
+func TestSortActiveGamesPrioritizesConnectedOverUnconnected(t *testing.T) {
+	app := &App{
+		config: config.Config{
+			Watch: config.WatchConfig{
+				PriorityGames:        []string{"ConnectedPriority", "UnconnectedPriority"},
+				FallbackAllCampaigns: true,
+				AutoStartCampaigns:   true,
+			},
+			Features: config.FeatureConfig{
+				ClaimDrops: config.Bool(true),
+			},
+		},
+	}
+
+	mockCampaignsJSON := `{
+		"currentUser": {
+			"dropCampaigns": [
+				{"id": "connected-priority", "status": "ACTIVE", "game": {"displayName": "ConnectedPriority"}},
+				{"id": "unconnected-priority", "status": "ACTIVE", "game": {"displayName": "UnconnectedPriority"}},
+				{"id": "connected-other", "status": "ACTIVE", "game": {"displayName": "ConnectedOther"}},
+				{"id": "unconnected-other", "status": "ACTIVE", "game": {"displayName": "UnconnectedOther"}}
+			]
+		}
+	}`
+
+	detail := func(id, game string, connected bool) []byte {
+		connStr := "false"
+		if connected {
+			connStr = "true"
+		}
+		return []byte(`{
+			"user": {
+				"dropCampaign": {
+					"id": "` + id + `",
+					"status": "ACTIVE",
+					"self": {"isAccountConnected": ` + connStr + `},
+					"game": {"displayName": "` + game + `"},
+					"timeBasedDrops": [
+						{"requiredMinutesWatched": 60, "self": {"hasPreconditionsMet": true, "isClaimed": false}}
+					]
+				}
+			}
+		}`)
+	}
+
+	mockClient := mockInventoryGQLClient{
+		dashboardResponse: []byte(mockCampaignsJSON),
+		detailResponses: map[string][]byte{
+			"connected-priority":   detail("connected-priority", "ConnectedPriority", true),
+			"unconnected-priority": detail("unconnected-priority", "UnconnectedPriority", false),
+			"connected-other":      detail("connected-other", "ConnectedOther", true),
+			"unconnected-other":    detail("unconnected-other", "UnconnectedOther", false),
+		},
+	}
+	invClient := inventory.Client{Client: mockClient, UserID: "805921782"}
+
+	sorted := app.sortActiveGames(context.Background(), invClient, nil)
+	// Expected Order:
+	// 1. Priority connected: "ConnectedPriority"
+	// 2. Priority unconnected: "UnconnectedPriority"
+	// 3. Other connected: "ConnectedOther"
+	// 4. Other unconnected: "UnconnectedOther"
+	expected := []string{"ConnectedPriority", "UnconnectedPriority", "ConnectedOther", "UnconnectedOther"}
+	if len(sorted) != len(expected) {
+		t.Fatalf("expected len %d, got %d (sorted = %v)", len(expected), len(sorted), sorted)
+	}
+	for i, game := range expected {
+		if sorted[i] != game {
+			t.Errorf("at index %d: expected %q, got %q", i, game, sorted[i])
+		}
+	}
+}

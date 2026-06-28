@@ -257,6 +257,11 @@ type campaignDetailsResponse struct {
 				StartAt                string `json:"startAt"`
 				EndAt                  string `json:"endAt"`
 				RequiredMinutesWatched int    `json:"requiredMinutesWatched"`
+				BenefitEdges           []struct {
+					Benefit struct {
+						Name string `json:"name"`
+					} `json:"benefit"`
+				} `json:"benefitEdges"`
 				Self                   struct {
 					HasPreconditionsMet *bool `json:"hasPreconditionsMet"`
 					IsClaimed           bool  `json:"isClaimed"`
@@ -266,12 +271,52 @@ type campaignDetailsResponse struct {
 	} `json:"user"`
 }
 
-func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, error) {
+func (c Client) getClaimedBenefits(ctx context.Context) (map[string]time.Time, error) {
+	response, err := c.Client.Do(ctx, gql.Request{
+		OperationName: inventoryOperation,
+		Variables: map[string]any{
+			"fetchRewardCampaigns": false,
+		},
+		Extensions: persistedQuery(inventoryHash),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var data struct {
+		CurrentUser *struct {
+			Inventory struct {
+				GameEventDrops []struct {
+					Name          string `json:"name"`
+					LastAwardedAt string `json:"lastAwardedAt"`
+				} `json:"gameEventDrops"`
+			} `json:"inventory"`
+		} `json:"currentUser"`
+	}
+	if err := json.Unmarshal(response.Data, &data); err != nil {
+		return nil, err
+	}
+
+	claimed := make(map[string]time.Time)
+	if data.CurrentUser != nil {
+		for _, d := range data.CurrentUser.Inventory.GameEventDrops {
+			if d.Name != "" && d.LastAwardedAt != "" {
+				t, err := time.Parse(time.RFC3339Nano, d.LastAwardedAt)
+				if err == nil {
+					claimed[strings.ToLower(d.Name)] = t.UTC()
+				}
+			}
+		}
+	}
+	return claimed, nil
+}
+
+func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, []string, error) {
 	if c.Client == nil {
-		return nil, fmt.Errorf("graphql client is required")
+		return nil, nil, fmt.Errorf("graphql client is required")
 	}
 	if c.UserID == "" {
-		return nil, fmt.Errorf("user id is required")
+		return nil, nil, fmt.Errorf("user id is required")
 	}
 
 	response, err := c.Client.Do(ctx, gql.Request{
@@ -282,20 +327,31 @@ func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, error) {
 		Extensions: persistedQuery(viewerCampaignsHash),
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var data viewerCampaignsResponse
 	if err := json.Unmarshal(response.Data, &data); err != nil {
-		return nil, fmt.Errorf("decode campaigns response: %w", err)
+		return nil, nil, fmt.Errorf("decode campaigns response: %w", err)
 	}
 
 	if data.CurrentUser == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
-	seen := make(map[string]bool)
-	var games []string
+	claimedBenefits, err := c.getClaimedBenefits(ctx)
+	if err != nil {
+		if c.Logger != nil {
+			c.Logger.Warn("fetch claimed benefits failed, using empty list", slog.String("error", err.Error()))
+		}
+		claimedBenefits = make(map[string]time.Time)
+	}
+
+	seenConnected := make(map[string]bool)
+	seenUnconnected := make(map[string]bool)
+	var connectedGames []string
+	var unconnectedGames []string
+
 	for _, campaign := range data.CurrentUser.DropCampaigns {
 		if campaign.Status != "ACTIVE" {
 			continue
@@ -303,14 +359,27 @@ func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, error) {
 
 		detail, err := c.getCampaignDetails(ctx, campaign.ID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		earnable := campaignDetailEarnable(time.Now().UTC(), detail)
+		earnable, isConnected := campaignDetailEarnable(time.Now().UTC(), detail, claimedBenefits)
 		if c.Logger != nil {
 			var dropSummary []string
 			if detail != nil && detail.User != nil && detail.User.DropCampaign != nil {
 				for _, d := range detail.User.DropCampaign.TimeBasedDrops {
+					benefitName := ""
+					if len(d.BenefitEdges) > 0 {
+						benefitName = d.BenefitEdges[0].Benefit.Name
+					}
 					claimed := d.Self.IsClaimed
+					if benefitName != "" {
+						if claimedAt, ok := claimedBenefits[strings.ToLower(benefitName)]; ok {
+							if campaignStartAt, err := time.Parse(time.RFC3339Nano, detail.User.DropCampaign.StartAt); err == nil {
+								if claimedAt.After(campaignStartAt.UTC()) {
+									claimed = true
+								}
+							}
+						}
+					}
 					preconditions := "nil"
 					if d.Self.HasPreconditionsMet != nil {
 						preconditions = fmt.Sprintf("%v", *d.Self.HasPreconditionsMet)
@@ -322,6 +391,7 @@ func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, error) {
 				slog.String("campaign_id", campaign.ID),
 				slog.String("game", campaign.Game.DisplayName),
 				slog.Bool("earnable", earnable),
+				slog.Bool("connected", isConnected),
 				slog.String("drops", fmt.Sprintf("%v", dropSummary)),
 			)
 		}
@@ -334,13 +404,22 @@ func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, error) {
 			name = campaign.Game.DisplayName
 		}
 		key := strings.ToLower(name)
-		if name != "" && !seen[key] {
-			seen[key] = true
-			games = append(games, name)
+		if name != "" {
+			if isConnected {
+				if !seenConnected[key] {
+					seenConnected[key] = true
+					connectedGames = append(connectedGames, name)
+				}
+			} else {
+				if !seenUnconnected[key] {
+					seenUnconnected[key] = true
+					unconnectedGames = append(unconnectedGames, name)
+				}
+			}
 		}
 	}
 
-	return games, nil
+	return connectedGames, unconnectedGames, nil
 }
 
 func (c Client) getCampaignDetails(ctx context.Context, campaignID string) (*campaignDetailsResponse, error) {
@@ -363,19 +442,34 @@ func (c Client) getCampaignDetails(ctx context.Context, campaignID string) (*cam
 	return &data, nil
 }
 
-func campaignDetailEarnable(now time.Time, data *campaignDetailsResponse) bool {
+func campaignDetailEarnable(now time.Time, data *campaignDetailsResponse, claimedBenefits map[string]time.Time) (bool, bool) {
 	if data == nil || data.User == nil || data.User.DropCampaign == nil {
-		return false
+		return false, false
 	}
 	campaign := data.User.DropCampaign
-	if !campaign.Self.IsAccountConnected {
-		return false
-	}
+	isConnected := campaign.Self.IsAccountConnected
+
 	if !campaignDropActive(now, campaign.Status, campaign.StartAt, campaign.EndAt, "", "") {
-		return false
+		return false, isConnected
 	}
+	hasEarnableDrop := false
 	for _, drop := range campaign.TimeBasedDrops {
-		if drop.RequiredMinutesWatched <= 0 || drop.Self.IsClaimed {
+		benefitName := ""
+		if len(drop.BenefitEdges) > 0 {
+			benefitName = drop.BenefitEdges[0].Benefit.Name
+		}
+		isClaimed := drop.Self.IsClaimed
+		if benefitName != "" {
+			if claimedAt, ok := claimedBenefits[strings.ToLower(benefitName)]; ok {
+				if campaignStartAt, err := time.Parse(time.RFC3339Nano, campaign.StartAt); err == nil {
+					if claimedAt.After(campaignStartAt.UTC()) {
+						isClaimed = true
+					}
+				}
+			}
+		}
+
+		if drop.RequiredMinutesWatched <= 0 || isClaimed {
 			continue
 		}
 		preconditionsMet := true
@@ -386,10 +480,10 @@ func campaignDetailEarnable(now time.Time, data *campaignDetailsResponse) bool {
 			continue
 		}
 		if campaignDropActive(now, campaign.Status, campaign.StartAt, campaign.EndAt, drop.StartAt, drop.EndAt) {
-			return true
+			hasEarnableDrop = true
 		}
 	}
-	return false
+	return hasEarnableDrop, isConnected
 }
 
 func campaignDetailGameName(data *campaignDetailsResponse) string {

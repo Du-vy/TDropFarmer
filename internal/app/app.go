@@ -836,22 +836,37 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 	}
 
 	// Categorize available games
-	var priorityAvailable []string
-	var otherAvailable []string
+	var priorityConnectedAvailable []string
+	var priorityUnconnectedAvailable []string
+	var otherConnectedAvailable []string
+	var otherUnconnectedAvailable []string
 
 	if a.config.Watch.AutoStartCampaigns {
-		availableCampaignGames, err := invClient.GetActiveCampaignGames(ctx)
+		availableConnected, availableUnconnected, err := invClient.GetActiveCampaignGames(ctx)
 		if err != nil {
 			a.logger.Warn("fetch active campaign games failed", slog.String("error", err.Error()))
 		} else {
-			for _, game := range availableCampaignGames {
+			seenConnected := make(map[string]bool)
+			for _, game := range availableConnected {
 				if game == "" || inProgressMap[gameKey(game)] {
 					continue
 				}
+				seenConnected[gameKey(game)] = true
 				if a.isPriorityGame(game) {
-					priorityAvailable = append(priorityAvailable, game)
+					priorityConnectedAvailable = append(priorityConnectedAvailable, game)
 				} else {
-					otherAvailable = append(otherAvailable, game)
+					otherConnectedAvailable = append(otherConnectedAvailable, game)
+				}
+			}
+			for _, game := range availableUnconnected {
+				key := gameKey(game)
+				if game == "" || inProgressMap[key] || seenConnected[key] {
+					continue
+				}
+				if a.isPriorityGame(game) {
+					priorityUnconnectedAvailable = append(priorityUnconnectedAvailable, game)
+				} else {
+					otherUnconnectedAvailable = append(otherUnconnectedAvailable, game)
 				}
 			}
 		}
@@ -862,12 +877,15 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 
 	if useFallbackAllCampaigns {
 		sortedGames = append(sortedGames, priorityInProgress...)
-		sortedGames = append(sortedGames, priorityAvailable...)
+		sortedGames = append(sortedGames, priorityConnectedAvailable...)
+		sortedGames = append(sortedGames, priorityUnconnectedAvailable...)
 		sortedGames = append(sortedGames, otherInProgress...)
-		sortedGames = append(sortedGames, otherAvailable...)
+		sortedGames = append(sortedGames, otherConnectedAvailable...)
+		sortedGames = append(sortedGames, otherUnconnectedAvailable...)
 	} else {
 		sortedGames = append(sortedGames, priorityInProgress...)
-		sortedGames = append(sortedGames, priorityAvailable...)
+		sortedGames = append(sortedGames, priorityConnectedAvailable...)
+		sortedGames = append(sortedGames, priorityUnconnectedAvailable...)
 		for _, pg := range a.config.Watch.PriorityGames {
 			pgKey := gameKey(pg)
 			if hasAnyDrops[pgKey] && !hasUnclaimed[pgKey] {
