@@ -53,6 +53,8 @@ func randomDuration(min, max time.Duration) time.Duration {
 	return min + time.Duration(rand.Int64N(int64(diff)))
 }
 
+const targetGameDiscoveryRefreshInterval = 30 * time.Minute
+
 func New(cfg config.Config, logger *slog.Logger, tokenStore auth.TokenStore) *App {
 	return &App{
 		config:      cfg,
@@ -355,7 +357,10 @@ func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invCli
 	a.activeGames = activeGames
 	a.activeGamesMu.Unlock()
 
-	a.logger.Info("active games updated", slog.Any("games", activeGames))
+	a.logger.Info("active games updated",
+		slog.Int("count", len(activeGames)),
+		slog.Any("top", topGames(activeGames, 5)),
+	)
 
 	eng.SendEvent(engine.Event{
 		Type:    engine.EventActiveGames,
@@ -394,6 +399,58 @@ func (a *App) getCombinedStreamers() []domain.Streamer {
 	combined = append(combined, a.staticStreamers...)
 	combined = append(combined, a.dynamicStreamers...)
 	return combined
+}
+
+func (a *App) activeGamesSnapshot() []string {
+	a.activeGamesMu.RLock()
+	defer a.activeGamesMu.RUnlock()
+	snapshot := make([]string, len(a.activeGames))
+	copy(snapshot, a.activeGames)
+	return snapshot
+}
+
+func activeGamesSignature(games []string) string {
+	keys := make([]string, 0, len(games))
+	for _, game := range games {
+		keys = append(keys, gameKey(game))
+	}
+	return strings.Join(keys, "\x00")
+}
+
+func topGames(games []string, limit int) []string {
+	if limit > len(games) {
+		limit = len(games)
+	}
+	top := make([]string, limit)
+	copy(top, games[:limit])
+	return top
+}
+
+func (a *App) hasActiveDynamicDropStreamer(eng *engine.Engine) bool {
+	active := eng.ActiveStreamers()
+	if len(active) == 0 {
+		return false
+	}
+
+	activeLogins := make(map[string]bool, len(active))
+	for _, login := range active {
+		activeLogins[login] = true
+	}
+
+	activeGames := a.activeGamesSnapshot()
+	activeGameKeys := make(map[string]bool, len(activeGames))
+	for _, game := range activeGames {
+		activeGameKeys[gameKey(game)] = true
+	}
+
+	a.streamersMu.RLock()
+	defer a.streamersMu.RUnlock()
+	for _, streamer := range a.dynamicStreamers {
+		if activeLogins[streamer.Login] && activeGameKeys[gameKey(streamer.GameName)] {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) getStreamersToPoll(eng *engine.Engine) []domain.Streamer {
@@ -492,6 +549,8 @@ func (a *App) discoverGamesStreamers(ctx context.Context, client gameStreamDisco
 
 func (a *App) pollGameStreams(ctx context.Context, eng *engine.Engine, gqlClient gql.Client) {
 	discClient := discovery.Client{Client: gqlClient, Logger: a.logger}
+	lastDiscoveryAt := time.Now()
+	lastGamesSignature := activeGamesSignature(a.activeGamesSnapshot())
 
 	for {
 		nextInterval := randomDuration(4*time.Minute, 6*time.Minute)
@@ -501,12 +560,20 @@ func (a *App) pollGameStreams(ctx context.Context, eng *engine.Engine, gqlClient
 			timer.Stop()
 			return
 		case <-timer.C:
+			currentGamesSignature := activeGamesSignature(a.activeGamesSnapshot())
+			if a.hasActiveDynamicDropStreamer(eng) && currentGamesSignature == lastGamesSignature && time.Since(lastDiscoveryAt) < targetGameDiscoveryRefreshInterval {
+				a.logger.Debug("skipping target game discovery; active dynamic streamer is still valid")
+				continue
+			}
+
 			a.logger.Info("polling target game discovery")
 			discovered, err := a.discoverGamesStreamers(ctx, discClient)
 			if err != nil {
 				a.logger.Warn("games discovery failed", slog.String("error", err.Error()))
 				continue
 			}
+			lastDiscoveryAt = time.Now()
+			lastGamesSignature = currentGamesSignature
 
 			a.streamersMu.Lock()
 			a.dynamicStreamers = discovered

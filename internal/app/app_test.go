@@ -373,3 +373,25 @@ func TestDiscoverGamesStreamersStopsAtFirstGameWithStreams(t *testing.T) {
 		}
 	}
 }
+
+func TestActiveGamesSignatureNormalizesGames(t *testing.T) {
+	got := activeGamesSignature([]string{" Fortnite ", "Warhammer 40,000: Darktide"})
+	want := "fortnite\x00warhammer 40,000: darktide"
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestTopGamesReturnsCopyWithLimit(t *testing.T) {
+	games := []string{"Fortnite", "Darktide", "2XKO"}
+	top := topGames(games, 2)
+
+	if len(top) != 2 || top[0] != "Fortnite" || top[1] != "Darktide" {
+		t.Fatalf("unexpected top games: %v", top)
+	}
+
+	top[0] = "Changed"
+	if games[0] != "Fortnite" {
+		t.Fatalf("topGames should return a copy, original changed to %v", games)
+	}
+}
