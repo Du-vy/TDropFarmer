@@ -378,7 +378,11 @@ func campaignDetailEarnable(now time.Time, data *campaignDetailsResponse) bool {
 		if drop.RequiredMinutesWatched <= 0 || drop.Self.IsClaimed {
 			continue
 		}
-		if drop.Self.HasPreconditionsMet == nil || !*drop.Self.HasPreconditionsMet {
+		preconditionsMet := true
+		if drop.Self.HasPreconditionsMet != nil {
+			preconditionsMet = *drop.Self.HasPreconditionsMet
+		}
+		if !preconditionsMet {
 			continue
 		}
 		if campaignDropActive(now, campaign.Status, campaign.StartAt, campaign.EndAt, drop.StartAt, drop.EndAt) {

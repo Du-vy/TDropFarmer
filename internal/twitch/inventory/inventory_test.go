@@ -234,7 +234,7 @@ func TestGetActiveCampaignGamesSkipsCompletedCampaigns(t *testing.T) {
 	}
 }
 
-func TestGetActiveCampaignGamesSkipsNilPreconditions(t *testing.T) {
+func TestGetActiveCampaignGamesAllowsNilPreconditions(t *testing.T) {
 	dashboard := []byte(`{
 		"currentUser": {
 			"dropCampaigns": [
@@ -278,7 +278,7 @@ func TestGetActiveCampaignGamesSkipsNilPreconditions(t *testing.T) {
 		t.Fatalf("GetActiveCampaignGames returned error: %v", err)
 	}
 
-	expected := []string{"Overwatch"}
+	expected := []string{"Rocket League", "Overwatch"}
 	if len(games) != len(expected) {
 		t.Fatalf("expected %v, got %v", expected, games)
 	}

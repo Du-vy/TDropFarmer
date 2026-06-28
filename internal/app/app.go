@@ -813,10 +813,10 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 	for _, drop := range drops {
 		if drop.GameName != "" {
 			key := gameKey(drop.GameName)
-			inProgressMap[key] = true
 			hasAnyDrops[key] = true
 			if !drop.IsClaimed {
 				hasUnclaimed[key] = true
+				inProgressMap[key] = true
 			}
 		}
 	}

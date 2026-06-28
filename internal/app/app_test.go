@@ -153,7 +153,7 @@ func TestSortActiveGames(t *testing.T) {
 		dashboardResponse: []byte(mockCampaignsJSON),
 		detailResponses: map[string][]byte{
 			"overwatch":  earnableDetail("overwatch", "Overwatch"),
-			"the-finals": earnableDetail("the-finals", "THE FINALS"),
+			"the-finals": completedDetail("the-finals", "THE FINALS"),
 			"minecraft":  earnableDetail("minecraft", "Minecraft"),
 			"marvel":     completedDetail("marvel", "Marvel Rivals"),
 		},
