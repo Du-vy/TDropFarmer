@@ -339,12 +339,12 @@ func (c Client) getClaimedBenefits(ctx context.Context) (map[string]time.Time, e
 	return claimed, nil
 }
 
-func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, []string, error) {
+func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, []string, []Drop, error) {
 	if c.Client == nil {
-		return nil, nil, fmt.Errorf("graphql client is required")
+		return nil, nil, nil, fmt.Errorf("graphql client is required")
 	}
 	if c.UserID == "" {
-		return nil, nil, fmt.Errorf("user id is required")
+		return nil, nil, nil, fmt.Errorf("user id is required")
 	}
 
 	response, err := c.Client.Do(ctx, gql.Request{
@@ -355,16 +355,16 @@ func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, []string,
 		Extensions: persistedQuery(viewerCampaignsHash),
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	var data viewerCampaignsResponse
 	if err := json.Unmarshal(response.Data, &data); err != nil {
-		return nil, nil, fmt.Errorf("decode campaigns response: %w", err)
+		return nil, nil, nil, fmt.Errorf("decode campaigns response: %w", err)
 	}
 
 	if data.CurrentUser == nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	claimedBenefits, err := c.getClaimedBenefits(ctx)
@@ -379,6 +379,7 @@ func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, []string,
 	seenUnconnected := make(map[string]bool)
 	var connectedGames []string
 	var unconnectedGames []string
+	var allCampaignDrops []Drop
 
 	for _, campaign := range data.CurrentUser.DropCampaigns {
 		if campaign.Status != "ACTIVE" {
@@ -387,7 +388,7 @@ func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, []string,
 
 		detail, err := c.getCampaignDetails(ctx, campaign.ID)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		earnable, isConnected := campaignDetailEarnable(time.Now().UTC(), detail, claimedBenefits)
 		if c.Logger != nil {
@@ -427,6 +428,49 @@ func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, []string,
 			continue
 		}
 
+		if detail != nil && detail.User != nil && detail.User.DropCampaign != nil {
+			cCampaign := detail.User.DropCampaign
+			gameImageURL := cleanTwitchImageURL(cCampaign.Game.BoxArtURL)
+			for _, td := range cCampaign.TimeBasedDrops {
+				var imageURL string
+				if len(td.BenefitEdges) > 0 {
+					imageURL = td.BenefitEdges[0].Benefit.ImageAssetURL
+				}
+				isClaimed := td.Self.IsClaimed
+				benefitName := ""
+				if len(td.BenefitEdges) > 0 {
+					benefitName = td.BenefitEdges[0].Benefit.Name
+				}
+				if benefitName != "" {
+					if claimedAt, ok := claimedBenefits[strings.ToLower(benefitName)]; ok {
+						if campaignStartAt, err := time.Parse(time.RFC3339Nano, cCampaign.StartAt); err == nil {
+							if claimedAt.After(campaignStartAt.UTC()) {
+								isClaimed = true
+							}
+						}
+					}
+				}
+				name := benefitName
+				if name == "" {
+					name = td.ID
+				}
+				allCampaignDrops = append(allCampaignDrops, Drop{
+					ID:              td.ID,
+					Name:            name,
+					CampaignID:      cCampaign.ID,
+					CampaignName:    cCampaign.Name,
+					GameName:        cCampaign.Game.DisplayName,
+					GameImageURL:    gameImageURL,
+					ImageURL:        imageURL,
+					RequiredMinutes: td.RequiredMinutesWatched,
+					CurrentMinutes:  0,
+					IsClaimed:       isClaimed,
+					IsClaimable:     false,
+					IsEarnable:      true,
+				})
+			}
+		}
+
 		name := campaignDetailGameName(detail)
 		if name == "" {
 			name = campaign.Game.DisplayName
@@ -447,7 +491,7 @@ func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, []string,
 		}
 	}
 
-	return connectedGames, unconnectedGames, nil
+	return connectedGames, unconnectedGames, allCampaignDrops, nil
 }
 
 func (c Client) getCampaignDetails(ctx context.Context, campaignID string) (*campaignDetailsResponse, error) {

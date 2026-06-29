@@ -39,9 +39,10 @@ type App struct {
 	activeGamesMu          sync.RWMutex
 	activeGames            []string
 	userID                 string
-	dropsMu                sync.RWMutex
-	lastDrops              []inventory.Drop
-	currentFarmingCampaign string
+	dropsMu                 sync.RWMutex
+	lastDrops               []inventory.Drop
+	lastActiveCampaignDrops []inventory.Drop
+	currentFarmingCampaign  string
 }
 
 type gameStreamDiscoverer interface {
@@ -256,6 +257,7 @@ func (a *App) Run(ctx context.Context) error {
 						var dropList []string
 						seenDrops := make(map[string]bool)
 
+						// 1. Try to find in-progress drops
 						for _, d := range a.lastDrops {
 							if strings.EqualFold(d.GameName, s.GameName) {
 								if campaignName == "" {
@@ -275,6 +277,32 @@ func (a *App) Run(ctx context.Context) error {
 										status = "Claimable"
 									}
 									dropList = append(dropList, fmt.Sprintf("• **%s** (%s)", d.Name, status))
+								}
+							}
+						}
+
+						// 2. Fallback to active campaign drops (0% progress) if not found in progress
+						if campaignID == "" {
+							for _, d := range a.lastActiveCampaignDrops {
+								if strings.EqualFold(d.GameName, s.GameName) {
+									if campaignName == "" {
+										campaignName = d.CampaignName
+										if campaignName == "" {
+											campaignName = d.CampaignID
+										}
+										campaignID = d.CampaignID
+										gameImageURL = d.GameImageURL
+									}
+									if !seenDrops[d.ID] {
+										seenDrops[d.ID] = true
+										status := fmt.Sprintf("%d/%d min", d.CurrentMinutes, d.RequiredMinutes)
+										if d.IsClaimed {
+											status = "Claimed"
+										} else if d.IsClaimable {
+											status = "Claimable"
+										}
+										dropList = append(dropList, fmt.Sprintf("• **%s** (%s)", d.Name, status))
+									}
 								}
 							}
 						}
@@ -1065,10 +1093,13 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 	var otherUnconnectedAvailable []string
 
 	if a.config.Watch.AutoStartCampaigns {
-		availableConnected, availableUnconnected, err := invClient.GetActiveCampaignGames(ctx)
+		availableConnected, availableUnconnected, allDrops, err := invClient.GetActiveCampaignGames(ctx)
 		if err != nil {
 			a.logger.Warn("fetch active campaign games failed", slog.String("error", err.Error()))
 		} else {
+			a.dropsMu.Lock()
+			a.lastActiveCampaignDrops = allDrops
+			a.dropsMu.Unlock()
 			seenConnected := make(map[string]bool)
 			for _, game := range availableConnected {
 				if game == "" || inProgressMap[gameKey(game)] {

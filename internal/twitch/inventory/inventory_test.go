@@ -240,7 +240,7 @@ func TestGetActiveCampaignGamesSkipsCompletedCampaigns(t *testing.T) {
 			"overwatch": earnableOverwatch,
 		},
 	}
-	games, unconnected, err := Client{Client: client, UserID: "805921782"}.GetActiveCampaignGames(context.Background())
+	games, unconnected, _, err := Client{Client: client, UserID: "805921782"}.GetActiveCampaignGames(context.Background())
 	if err != nil {
 		t.Fatalf("GetActiveCampaignGames returned error: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestGetActiveCampaignGamesAllowsNilPreconditions(t *testing.T) {
 			"overwatch":    earnableOverwatch,
 		},
 	}
-	games, unconnected, err := Client{Client: client, UserID: "805921782"}.GetActiveCampaignGames(context.Background())
+	games, unconnected, _, err := Client{Client: client, UserID: "805921782"}.GetActiveCampaignGames(context.Background())
 	if err != nil {
 		t.Fatalf("GetActiveCampaignGames returned error: %v", err)
 	}
@@ -404,7 +404,7 @@ func TestGetActiveCampaignGamesSkipsGlobalClaimedCampaigns(t *testing.T) {
 		},
 		inventory: inventoryResp,
 	}
-	games, unconnected, err := Client{Client: client, UserID: "805921782"}.GetActiveCampaignGames(context.Background())
+	games, unconnected, _, err := Client{Client: client, UserID: "805921782"}.GetActiveCampaignGames(context.Background())
 	if err != nil {
 		t.Fatalf("GetActiveCampaignGames returned error: %v", err)
 	}
