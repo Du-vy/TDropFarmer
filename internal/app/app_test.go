@@ -411,7 +411,7 @@ func TestDiscoverGamesStreamersStopsAtFirstGameWithStreams(t *testing.T) {
 		},
 	}
 
-	streamers, err := app.discoverGamesStreamers(context.Background(), discoverer)
+	streamers, err := app.discoverGamesStreamers(context.Background(), discoverer, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -433,6 +433,135 @@ func TestDiscoverGamesStreamersStopsAtFirstGameWithStreams(t *testing.T) {
 		if streamer.GameName != "Target Game" {
 			t.Fatalf("expected only target game streamers, got %v", streamers)
 		}
+	}
+}
+
+func TestDiscoverGamesStreamersKeepsStickyGameWithinSameBucket(t *testing.T) {
+	app := &App{
+		config: config.Config{
+			Watch: config.WatchConfig{
+				FallbackAllCampaigns: true,
+			},
+			Features: config.FeatureConfig{
+				ClaimDrops: config.Bool(true),
+			},
+		},
+		activeGames: []string{"Black Desert", "Sea of Thieves"},
+		lastDrops: []inventory.Drop{
+			{GameName: "Black Desert", IsEarnable: true, IsClaimed: false},
+			{GameName: "Sea of Thieves", IsEarnable: true, IsClaimed: false},
+		},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	discoverer := &fakeGameDiscoverer{
+		streamers: map[string][]domain.Streamer{
+			"Black Desert": {
+				{ID: "1", Login: "black_desert_one", GameName: "Black Desert"},
+			},
+			"Sea of Thieves": {
+				{ID: "2", Login: "sea_one", GameName: "Sea of Thieves"},
+			},
+		},
+	}
+
+	streamers, err := app.discoverGamesStreamers(context.Background(), discoverer, "Sea of Thieves")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expectedCalls := []string{"Sea of Thieves"}
+	if len(discoverer.calls) != len(expectedCalls) || discoverer.calls[0] != expectedCalls[0] {
+		t.Fatalf("expected calls %v, got %v", expectedCalls, discoverer.calls)
+	}
+	if len(streamers) != 1 || streamers[0].GameName != "Sea of Thieves" {
+		t.Fatalf("expected Sea of Thieves streamers, got %v", streamers)
+	}
+}
+
+func TestDiscoverGamesStreamersTriesHigherBucketBeforeStickyGame(t *testing.T) {
+	app := &App{
+		config: config.Config{
+			Watch: config.WatchConfig{
+				PriorityGames:        []string{"Warframe"},
+				FallbackAllCampaigns: true,
+			},
+			Features: config.FeatureConfig{
+				ClaimDrops: config.Bool(true),
+			},
+		},
+		activeGames: []string{"Warframe", "Black Desert", "Sea of Thieves"},
+		lastDrops: []inventory.Drop{
+			{GameName: "Warframe", IsEarnable: true, IsClaimed: false},
+			{GameName: "Black Desert", IsEarnable: true, IsClaimed: false},
+			{GameName: "Sea of Thieves", IsEarnable: true, IsClaimed: false},
+		},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	discoverer := &fakeGameDiscoverer{
+		streamers: map[string][]domain.Streamer{
+			"Black Desert": {
+				{ID: "1", Login: "black_desert_one", GameName: "Black Desert"},
+			},
+			"Sea of Thieves": {
+				{ID: "2", Login: "sea_one", GameName: "Sea of Thieves"},
+			},
+		},
+	}
+
+	streamers, err := app.discoverGamesStreamers(context.Background(), discoverer, "Sea of Thieves")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expectedCalls := []string{"Warframe", "Sea of Thieves"}
+	if len(discoverer.calls) != len(expectedCalls) {
+		t.Fatalf("expected calls %v, got %v", expectedCalls, discoverer.calls)
+	}
+	for i, expected := range expectedCalls {
+		if discoverer.calls[i] != expected {
+			t.Fatalf("expected calls %v, got %v", expectedCalls, discoverer.calls)
+		}
+	}
+	if len(streamers) != 1 || streamers[0].GameName != "Sea of Thieves" {
+		t.Fatalf("expected Sea of Thieves streamers after higher bucket has none, got %v", streamers)
+	}
+}
+
+func TestCanKeepCurrentFarmingGameAllowsSameBucket(t *testing.T) {
+	app := &App{
+		config: config.Config{
+			Watch: config.WatchConfig{
+				PriorityGames: []string{"Warframe"},
+			},
+		},
+		lastDrops: []inventory.Drop{
+			{GameName: "Black Desert", IsEarnable: true, IsClaimed: false},
+			{GameName: "Sea of Thieves", IsEarnable: true, IsClaimed: false},
+		},
+	}
+
+	if !app.canKeepCurrentFarmingGame([]string{"Black Desert", "Sea of Thieves"}, "Sea of Thieves") {
+		t.Fatal("expected current game to stay when only same-bucket games are ahead")
+	}
+}
+
+func TestCanKeepCurrentFarmingGameRejectsHigherBucket(t *testing.T) {
+	app := &App{
+		config: config.Config{
+			Watch: config.WatchConfig{
+				PriorityGames: []string{"Warframe"},
+			},
+		},
+		lastDrops: []inventory.Drop{
+			{GameName: "Warframe", IsEarnable: true, IsClaimed: false},
+			{GameName: "Sea of Thieves", IsEarnable: true, IsClaimed: false},
+		},
+	}
+
+	if app.canKeepCurrentFarmingGame([]string{"Warframe", "Sea of Thieves"}, "Sea of Thieves") {
+		t.Fatal("expected higher-priority bucket to preempt current game")
 	}
 }
 

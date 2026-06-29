@@ -162,7 +162,7 @@ func (a *App) Run(ctx context.Context) error {
 	if hasGamesConfigured || useFallbackAllCampaigns {
 		discClient := discovery.Client{Client: gqlClient, Logger: a.logger}
 		a.logger.Info("performing initial target game discovery")
-		discovered, err := a.discoverGamesStreamers(ctx, discClient)
+		discovered, err := a.discoverGamesStreamers(ctx, discClient, "")
 		if err != nil {
 			a.logger.Warn("initial games discovery failed", slog.String("error", err.Error()))
 		} else {
@@ -534,33 +534,6 @@ func topGames(games []string, limit int) []string {
 	return top
 }
 
-func (a *App) hasActiveDynamicDropStreamer(eng *engine.Engine) bool {
-	active := eng.ActiveStreamers()
-	if len(active) == 0 {
-		return false
-	}
-
-	activeLogins := make(map[string]bool, len(active))
-	for _, login := range active {
-		activeLogins[login] = true
-	}
-
-	activeGames := a.activeGamesSnapshot()
-	activeGameKeys := make(map[string]bool, len(activeGames))
-	for _, game := range activeGames {
-		activeGameKeys[gameKey(game)] = true
-	}
-
-	a.streamersMu.RLock()
-	defer a.streamersMu.RUnlock()
-	for _, streamer := range a.dynamicStreamers {
-		if activeLogins[streamer.Login] && activeGameKeys[gameKey(streamer.GameName)] {
-			return true
-		}
-	}
-	return false
-}
-
 func (a *App) activeDynamicDropGame(eng *engine.Engine) string {
 	active := eng.ActiveStreamers()
 	if len(active) == 0 {
@@ -698,7 +671,7 @@ func (a *App) farmingCampaignForGame(gameName string) (campaignName, campaignID,
 	return campaignName, campaignID, gameImageURL, dropList
 }
 
-func (a *App) discoverGamesStreamers(ctx context.Context, client gameStreamDiscoverer) ([]domain.Streamer, error) {
+func (a *App) discoverGamesStreamers(ctx context.Context, client gameStreamDiscoverer, stickyGameName string) ([]domain.Streamer, error) {
 	seen := make(map[string]bool)
 
 	a.streamersMu.RLock()
@@ -714,6 +687,7 @@ func (a *App) discoverGamesStreamers(ctx context.Context, client gameStreamDisco
 		gamesToDiscover = make([]string, len(a.activeGames))
 		copy(gamesToDiscover, a.activeGames)
 		a.activeGamesMu.RUnlock()
+		gamesToDiscover = a.stabilizeActiveGamesByRank(gamesToDiscover, stickyGameName)
 	} else {
 		gamesToDiscover = a.config.Watch.PriorityGames
 	}
@@ -757,7 +731,6 @@ func (a *App) discoverGamesStreamers(ctx context.Context, client gameStreamDisco
 func (a *App) pollGameStreams(ctx context.Context, eng *engine.Engine, gqlClient gql.Client) {
 	discClient := discovery.Client{Client: gqlClient, Logger: a.logger}
 	lastDiscoveryAt := time.Now()
-	lastGamesSignature := activeGamesSignature(a.activeGamesSnapshot())
 
 	for {
 		nextInterval := randomDuration(4*time.Minute, 6*time.Minute)
@@ -767,20 +740,20 @@ func (a *App) pollGameStreams(ctx context.Context, eng *engine.Engine, gqlClient
 			timer.Stop()
 			return
 		case <-timer.C:
-			currentGamesSignature := activeGamesSignature(a.activeGamesSnapshot())
-			if a.hasActiveDynamicDropStreamer(eng) && currentGamesSignature == lastGamesSignature && time.Since(lastDiscoveryAt) < targetGameDiscoveryRefreshInterval {
+			activeGames := a.activeGamesSnapshot()
+			stickyGameName := a.activeDynamicDropGame(eng)
+			if stickyGameName != "" && a.canKeepCurrentFarmingGame(activeGames, stickyGameName) && time.Since(lastDiscoveryAt) < targetGameDiscoveryRefreshInterval {
 				a.logger.Debug("skipping target game discovery; active dynamic streamer is still valid")
 				continue
 			}
 
 			a.logger.Info("polling target game discovery")
-			discovered, err := a.discoverGamesStreamers(ctx, discClient)
+			discovered, err := a.discoverGamesStreamers(ctx, discClient, stickyGameName)
 			if err != nil {
 				a.logger.Warn("games discovery failed", slog.String("error", err.Error()))
 				continue
 			}
 			lastDiscoveryAt = time.Now()
-			lastGamesSignature = currentGamesSignature
 
 			a.streamersMu.Lock()
 			a.dynamicStreamers = discovered
@@ -1140,6 +1113,66 @@ func (a *App) stabilizeCurrentFarmingGame(sortedGames []string, ranks map[string
 	reordered = append(reordered, sortedGames[insertIndex:currentIndex]...)
 	reordered = append(reordered, sortedGames[currentIndex+1:]...)
 	return reordered
+}
+
+func (a *App) activeGameRanksSnapshot(games []string) map[string]int {
+	inProgress := make(map[string]bool)
+	a.dropsMu.RLock()
+	for _, drop := range a.lastDrops {
+		if drop.GameName == "" || !drop.IsEarnable || drop.IsClaimed {
+			continue
+		}
+		inProgress[gameKey(drop.GameName)] = true
+	}
+	a.dropsMu.RUnlock()
+
+	ranks := make(map[string]int, len(games))
+	for _, game := range games {
+		key := gameKey(game)
+		if key == "" {
+			continue
+		}
+		if a.isPriorityGame(game) {
+			if inProgress[key] {
+				ranks[key] = activeGameRankPriorityInProgress
+			} else {
+				ranks[key] = activeGameRankPriorityAvailable
+			}
+			continue
+		}
+		if inProgress[key] {
+			ranks[key] = activeGameRankOtherInProgress
+		} else {
+			ranks[key] = activeGameRankOtherAvailable
+		}
+	}
+	return ranks
+}
+
+func (a *App) stabilizeActiveGamesByRank(games []string, stickyGameName string) []string {
+	return a.stabilizeCurrentFarmingGame(games, a.activeGameRanksSnapshot(games), stickyGameName)
+}
+
+func (a *App) canKeepCurrentFarmingGame(games []string, stickyGameName string) bool {
+	stickyKey := gameKey(stickyGameName)
+	if stickyKey == "" {
+		return false
+	}
+
+	ranks := a.activeGameRanksSnapshot(games)
+	stickyRank, ok := ranks[stickyKey]
+	if !ok {
+		return false
+	}
+
+	for _, game := range games {
+		key := gameKey(game)
+		rank, ok := ranks[key]
+		if ok && rank < stickyRank {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, drops []inventory.Drop, stickyGameName string) []string {
