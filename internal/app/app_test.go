@@ -313,6 +313,72 @@ func TestSortActiveGamesPrioritizesConnectedOverUnconnected(t *testing.T) {
 	}
 }
 
+func TestSortActiveGamesKeepsCurrentCampaignWithinSamePriorityBucket(t *testing.T) {
+	app := &App{
+		config: config.Config{
+			Watch: config.WatchConfig{
+				PriorityGames:        []string{"Warframe"},
+				FallbackAllCampaigns: true,
+				AutoStartCampaigns:   true,
+			},
+			Features: config.FeatureConfig{
+				ClaimDrops: config.Bool(true),
+			},
+		},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	app.currentFarmingCampaign = "black-desert-campaign"
+
+	invClient := inventory.Client{Client: mockInventoryGQLClient{
+		dashboardResponse: []byte(`{"currentUser":{"dropCampaigns":[]}}`),
+	}, UserID: "805921782"}
+	drops := []inventory.Drop{
+		{GameName: "Sea of Thieves", CampaignID: "sea-campaign", IsEarnable: true, IsClaimed: false},
+		{GameName: "Black Desert", CampaignID: "black-desert-campaign", IsEarnable: true, IsClaimed: false},
+	}
+
+	sorted := app.sortActiveGames(context.Background(), invClient, drops)
+
+	if len(sorted) < 2 {
+		t.Fatalf("expected at least 2 games, got %v", sorted)
+	}
+	if sorted[0] != "Black Desert" || sorted[1] != "Sea of Thieves" {
+		t.Fatalf("expected current campaign to stay first in same bucket, got %v", sorted)
+	}
+}
+
+func TestSortActiveGamesPriorityCampaignPreemptsCurrentNonPriorityCampaign(t *testing.T) {
+	app := &App{
+		config: config.Config{
+			Watch: config.WatchConfig{
+				PriorityGames:        []string{"Warframe"},
+				FallbackAllCampaigns: true,
+				AutoStartCampaigns:   true,
+			},
+			Features: config.FeatureConfig{
+				ClaimDrops: config.Bool(true),
+			},
+		},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	app.currentFarmingCampaign = "black-desert-campaign"
+
+	invClient := inventory.Client{Client: mockInventoryGQLClient{
+		dashboardResponse: []byte(`{"currentUser":{"dropCampaigns":[]}}`),
+	}, UserID: "805921782"}
+	drops := []inventory.Drop{
+		{GameName: "Sea of Thieves", CampaignID: "sea-campaign", IsEarnable: true, IsClaimed: false},
+		{GameName: "Black Desert", CampaignID: "black-desert-campaign", IsEarnable: true, IsClaimed: false},
+		{GameName: "Warframe", CampaignID: "warframe-campaign", IsEarnable: true, IsClaimed: false},
+	}
+
+	sorted := app.sortActiveGames(context.Background(), invClient, drops)
+
+	if len(sorted) == 0 || sorted[0] != "Warframe" {
+		t.Fatalf("expected priority campaign to preempt current non-priority campaign, got %v", sorted)
+	}
+}
+
 type fakeGameDiscoverer struct {
 	calls     []string
 	streamers map[string][]domain.Streamer

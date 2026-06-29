@@ -28,17 +28,17 @@ import (
 )
 
 type App struct {
-	config                 config.Config
-	logger                 *slog.Logger
-	tokenStore             auth.TokenStore
-	chatMu                 sync.Mutex
-	chatCancels            map[string]context.CancelFunc
-	streamersMu            sync.RWMutex
-	staticStreamers        []domain.Streamer
-	dynamicStreamers       []domain.Streamer
-	activeGamesMu          sync.RWMutex
-	activeGames            []string
-	userID                 string
+	config                  config.Config
+	logger                  *slog.Logger
+	tokenStore              auth.TokenStore
+	chatMu                  sync.Mutex
+	chatCancels             map[string]context.CancelFunc
+	streamersMu             sync.RWMutex
+	staticStreamers         []domain.Streamer
+	dynamicStreamers        []domain.Streamer
+	activeGamesMu           sync.RWMutex
+	activeGames             []string
+	userID                  string
 	dropsMu                 sync.RWMutex
 	lastDrops               []inventory.Drop
 	lastActiveCampaignDrops []inventory.Drop
@@ -247,126 +247,63 @@ func (a *App) Run(ctx context.Context) error {
 					a.startChat(ctx, eng, event.Streamer, token.AccessToken)
 				}
 
-				if notifier != nil {
-					s := a.findCombinedStreamer(event.Streamer)
-					if s != nil && s.GameName != "" {
-						a.dropsMu.RLock()
-						var campaignName string
-						var campaignID string
-						var gameImageURL string
-						var dropList []string
-						seenDrops := make(map[string]bool)
+				s := a.findCombinedStreamer(event.Streamer)
+				if s != nil && s.GameName != "" {
+					campaignName, campaignID, gameImageURL, dropList := a.farmingCampaignForGame(s.GameName)
+					if campaignID != "" {
+						campaignChanged := a.setCurrentFarmingCampaign(campaignID)
+						if notifier != nil && campaignChanged {
 
-						// 1. Try to find in-progress drops
-						for _, d := range a.lastDrops {
-							if strings.EqualFold(d.GameName, s.GameName) {
-								if campaignName == "" {
-									campaignName = d.CampaignName
-									if campaignName == "" {
-										campaignName = d.CampaignID
-									}
-									campaignID = d.CampaignID
-									gameImageURL = d.GameImageURL
-								}
-								if !seenDrops[d.ID] {
-									seenDrops[d.ID] = true
-									status := fmt.Sprintf("%d/%d min", d.CurrentMinutes, d.RequiredMinutes)
-									if d.IsClaimed {
-										status = "Claimed"
-									} else if d.IsClaimable {
-										status = "Claimable"
-									}
-									dropList = append(dropList, fmt.Sprintf("• **%s** (%s)", d.Name, status))
-								}
-							}
-						}
-
-						// 2. Fallback to active campaign drops (0% progress) if not found in progress
-						if campaignID == "" {
-							for _, d := range a.lastActiveCampaignDrops {
-								if strings.EqualFold(d.GameName, s.GameName) {
-									if campaignName == "" {
-										campaignName = d.CampaignName
-										if campaignName == "" {
-											campaignName = d.CampaignID
-										}
-										campaignID = d.CampaignID
-										gameImageURL = d.GameImageURL
-									}
-									if !seenDrops[d.ID] {
-										seenDrops[d.ID] = true
-										status := fmt.Sprintf("%d/%d min", d.CurrentMinutes, d.RequiredMinutes)
-										if d.IsClaimed {
-											status = "Claimed"
-										} else if d.IsClaimable {
-											status = "Claimable"
-										}
-										dropList = append(dropList, fmt.Sprintf("• **%s** (%s)", d.Name, status))
-									}
-								}
-							}
-						}
-						a.dropsMu.RUnlock()
-
-						if campaignID != "" {
-							a.activeGamesMu.Lock()
-							if a.currentFarmingCampaign != campaignID {
-								a.currentFarmingCampaign = campaignID
-								a.activeGamesMu.Unlock()
-
-								var description string
-								if len(dropList) > 0 {
-									description = strings.Join(dropList, "\n")
-								} else {
-									description = "No drops found or campaign already completed."
-								}
-
-								payload := notify.WebhookPayload{
-									Embeds: []notify.Embed{
-										{
-											Title:       "Started Farming Campaign!",
-											Description: description,
-											Color:       3447003, // Slate Blue (#3498DB)
-											Author: &notify.EmbedAuthor{
-												Name: s.GameName,
-											},
-											Fields: []notify.EmbedField{
-												{
-													Name:   "Game",
-													Value:  s.GameName,
-													Inline: true,
-												},
-												{
-													Name:   "Campaign",
-													Value:  campaignName,
-													Inline: true,
-												},
-												{
-													Name:   "Streamer",
-													Value:  s.DisplayName,
-													Inline: true,
-												},
-											},
-											Footer: &notify.EmbedFooter{
-												Text: "TDropFarmer Bot - by Duvy",
-											},
-											Timestamp: time.Now().UTC().Format(time.RFC3339),
-										},
-									},
-								}
-								if gameImageURL != "" {
-									payload.Embeds[0].Author.IconURL = gameImageURL
-									payload.Embeds[0].Thumbnail = &notify.EmbedMedia{URL: gameImageURL}
-								}
-
-								go func() {
-									if err := notifier.Send(context.Background(), payload); err != nil {
-										a.logger.Warn("discord notification failed", slog.String("error", err.Error()))
-									}
-								}()
+							var description string
+							if len(dropList) > 0 {
+								description = strings.Join(dropList, "\n")
 							} else {
-								a.activeGamesMu.Unlock()
+								description = "No drops found or campaign already completed."
 							}
+
+							payload := notify.WebhookPayload{
+								Embeds: []notify.Embed{
+									{
+										Title:       "Started Farming Campaign!",
+										Description: description,
+										Color:       3447003, // Slate Blue (#3498DB)
+										Author: &notify.EmbedAuthor{
+											Name: s.GameName,
+										},
+										Fields: []notify.EmbedField{
+											{
+												Name:   "Game",
+												Value:  s.GameName,
+												Inline: true,
+											},
+											{
+												Name:   "Campaign",
+												Value:  campaignName,
+												Inline: true,
+											},
+											{
+												Name:   "Streamer",
+												Value:  s.DisplayName,
+												Inline: true,
+											},
+										},
+										Footer: &notify.EmbedFooter{
+											Text: "TDropFarmer Bot - by Duvy",
+										},
+										Timestamp: time.Now().UTC().Format(time.RFC3339),
+									},
+								},
+							}
+							if gameImageURL != "" {
+								payload.Embeds[0].Author.IconURL = gameImageURL
+								payload.Embeds[0].Thumbnail = &notify.EmbedMedia{URL: gameImageURL}
+							}
+
+							go func() {
+								if err := notifier.Send(context.Background(), payload); err != nil {
+									a.logger.Warn("discord notification failed", slog.String("error", err.Error()))
+								}
+							}()
 						}
 					}
 				}
@@ -660,6 +597,84 @@ func (a *App) findCombinedStreamer(login string) *domain.Streamer {
 		}
 	}
 	return nil
+}
+
+func (a *App) setCurrentFarmingCampaign(campaignID string) bool {
+	a.activeGamesMu.Lock()
+	defer a.activeGamesMu.Unlock()
+	if a.currentFarmingCampaign == campaignID {
+		return false
+	}
+	a.currentFarmingCampaign = campaignID
+	return true
+}
+
+func (a *App) currentFarmingCampaignSnapshot() string {
+	a.activeGamesMu.RLock()
+	defer a.activeGamesMu.RUnlock()
+	return a.currentFarmingCampaign
+}
+
+func (a *App) farmingCampaignForGame(gameName string) (campaignName, campaignID, gameImageURL string, dropList []string) {
+	a.dropsMu.RLock()
+	defer a.dropsMu.RUnlock()
+
+	seenDrops := make(map[string]bool)
+	for _, d := range a.lastDrops {
+		if !strings.EqualFold(d.GameName, gameName) {
+			continue
+		}
+		if campaignName == "" {
+			campaignName = d.CampaignName
+			if campaignName == "" {
+				campaignName = d.CampaignID
+			}
+			campaignID = d.CampaignID
+			gameImageURL = d.GameImageURL
+		}
+		if seenDrops[d.ID] {
+			continue
+		}
+		seenDrops[d.ID] = true
+		status := fmt.Sprintf("%d/%d min", d.CurrentMinutes, d.RequiredMinutes)
+		if d.IsClaimed {
+			status = "Claimed"
+		} else if d.IsClaimable {
+			status = "Claimable"
+		}
+		dropList = append(dropList, fmt.Sprintf("• **%s** (%s)", d.Name, status))
+	}
+
+	if campaignID != "" {
+		return campaignName, campaignID, gameImageURL, dropList
+	}
+
+	for _, d := range a.lastActiveCampaignDrops {
+		if !strings.EqualFold(d.GameName, gameName) {
+			continue
+		}
+		if campaignName == "" {
+			campaignName = d.CampaignName
+			if campaignName == "" {
+				campaignName = d.CampaignID
+			}
+			campaignID = d.CampaignID
+			gameImageURL = d.GameImageURL
+		}
+		if seenDrops[d.ID] {
+			continue
+		}
+		seenDrops[d.ID] = true
+		status := fmt.Sprintf("%d/%d min", d.CurrentMinutes, d.RequiredMinutes)
+		if d.IsClaimed {
+			status = "Claimed"
+		} else if d.IsClaimable {
+			status = "Claimable"
+		}
+		dropList = append(dropList, fmt.Sprintf("• **%s** (%s)", d.Name, status))
+	}
+
+	return campaignName, campaignID, gameImageURL, dropList
 }
 
 func (a *App) discoverGamesStreamers(ctx context.Context, client gameStreamDiscoverer) ([]domain.Streamer, error) {
@@ -1050,10 +1065,70 @@ func gameKey(gameName string) string {
 	return strings.ToLower(strings.TrimSpace(gameName))
 }
 
+const (
+	activeGameRankPriorityInProgress = iota
+	activeGameRankPriorityAvailable
+	activeGameRankOtherInProgress
+	activeGameRankOtherAvailable
+)
+
+func appendActiveGame(games *[]string, ranks map[string]int, campaignIDs map[string]string, gameName string, rank int, campaignID string) {
+	if gameName == "" {
+		return
+	}
+	key := gameKey(gameName)
+	*games = append(*games, gameName)
+	ranks[key] = rank
+	if campaignID != "" {
+		campaignIDs[key] = campaignID
+	}
+}
+
+func (a *App) stabilizeCurrentFarmingGame(sortedGames []string, ranks map[string]int, campaignIDs map[string]string) []string {
+	currentCampaignID := a.currentFarmingCampaignSnapshot()
+	if currentCampaignID == "" || len(sortedGames) < 2 {
+		return sortedGames
+	}
+
+	currentIndex := -1
+	currentRank := 0
+	for i, game := range sortedGames {
+		key := gameKey(game)
+		if campaignIDs[key] == currentCampaignID {
+			currentIndex = i
+			currentRank = ranks[key]
+			break
+		}
+	}
+	if currentIndex <= 0 {
+		return sortedGames
+	}
+
+	insertIndex := 0
+	for insertIndex < len(sortedGames) {
+		key := gameKey(sortedGames[insertIndex])
+		if ranks[key] >= currentRank {
+			break
+		}
+		insertIndex++
+	}
+	if insertIndex == currentIndex {
+		return sortedGames
+	}
+
+	reordered := make([]string, 0, len(sortedGames))
+	reordered = append(reordered, sortedGames[:insertIndex]...)
+	reordered = append(reordered, sortedGames[currentIndex])
+	reordered = append(reordered, sortedGames[insertIndex:currentIndex]...)
+	reordered = append(reordered, sortedGames[currentIndex+1:]...)
+	return reordered
+}
+
 func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, drops []inventory.Drop) []string {
 	// Categorize in-progress games
 	var priorityInProgress []string
 	var otherInProgress []string
+	campaignByGame := make(map[string]string)
 	inProgressMap := make(map[string]bool)
 	addedInProgress := make(map[string]bool)
 
@@ -1065,6 +1140,9 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 		if drop.GameName != "" {
 			key := gameKey(drop.GameName)
 			hasAnyDrops[key] = true
+			if campaignByGame[key] == "" && drop.CampaignID != "" {
+				campaignByGame[key] = drop.CampaignID
+			}
 			if !drop.IsClaimed {
 				hasUnclaimed[key] = true
 				inProgressMap[key] = true
@@ -1100,6 +1178,12 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 			a.dropsMu.Lock()
 			a.lastActiveCampaignDrops = allDrops
 			a.dropsMu.Unlock()
+			for _, drop := range allDrops {
+				key := gameKey(drop.GameName)
+				if key != "" && campaignByGame[key] == "" && drop.CampaignID != "" {
+					campaignByGame[key] = drop.CampaignID
+				}
+			}
 			seenConnected := make(map[string]bool)
 			for _, game := range availableConnected {
 				if game == "" || inProgressMap[gameKey(game)] {
@@ -1127,19 +1211,38 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 	}
 
 	var sortedGames []string
+	gameRanks := make(map[string]int)
 	useFallbackAllCampaigns := a.config.Watch.FallbackAllCampaigns && a.config.Features.ClaimDropsEnabled()
 
 	if useFallbackAllCampaigns {
-		sortedGames = append(sortedGames, priorityInProgress...)
-		sortedGames = append(sortedGames, priorityConnectedAvailable...)
-		sortedGames = append(sortedGames, priorityUnconnectedAvailable...)
-		sortedGames = append(sortedGames, otherInProgress...)
-		sortedGames = append(sortedGames, otherConnectedAvailable...)
-		sortedGames = append(sortedGames, otherUnconnectedAvailable...)
+		for _, game := range priorityInProgress {
+			appendActiveGame(&sortedGames, gameRanks, campaignByGame, game, activeGameRankPriorityInProgress, campaignByGame[gameKey(game)])
+		}
+		for _, game := range priorityConnectedAvailable {
+			appendActiveGame(&sortedGames, gameRanks, campaignByGame, game, activeGameRankPriorityAvailable, campaignByGame[gameKey(game)])
+		}
+		for _, game := range priorityUnconnectedAvailable {
+			appendActiveGame(&sortedGames, gameRanks, campaignByGame, game, activeGameRankPriorityAvailable, campaignByGame[gameKey(game)])
+		}
+		for _, game := range otherInProgress {
+			appendActiveGame(&sortedGames, gameRanks, campaignByGame, game, activeGameRankOtherInProgress, campaignByGame[gameKey(game)])
+		}
+		for _, game := range otherConnectedAvailable {
+			appendActiveGame(&sortedGames, gameRanks, campaignByGame, game, activeGameRankOtherAvailable, campaignByGame[gameKey(game)])
+		}
+		for _, game := range otherUnconnectedAvailable {
+			appendActiveGame(&sortedGames, gameRanks, campaignByGame, game, activeGameRankOtherAvailable, campaignByGame[gameKey(game)])
+		}
 	} else {
-		sortedGames = append(sortedGames, priorityInProgress...)
-		sortedGames = append(sortedGames, priorityConnectedAvailable...)
-		sortedGames = append(sortedGames, priorityUnconnectedAvailable...)
+		for _, game := range priorityInProgress {
+			appendActiveGame(&sortedGames, gameRanks, campaignByGame, game, activeGameRankPriorityInProgress, campaignByGame[gameKey(game)])
+		}
+		for _, game := range priorityConnectedAvailable {
+			appendActiveGame(&sortedGames, gameRanks, campaignByGame, game, activeGameRankPriorityAvailable, campaignByGame[gameKey(game)])
+		}
+		for _, game := range priorityUnconnectedAvailable {
+			appendActiveGame(&sortedGames, gameRanks, campaignByGame, game, activeGameRankPriorityAvailable, campaignByGame[gameKey(game)])
+		}
 		for _, pg := range a.config.Watch.PriorityGames {
 			pgKey := gameKey(pg)
 			if hasAnyDrops[pgKey] && !hasUnclaimed[pgKey] {
@@ -1154,7 +1257,7 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 				}
 			}
 			if !found {
-				sortedGames = append(sortedGames, pg)
+				appendActiveGame(&sortedGames, gameRanks, campaignByGame, pg, activeGameRankPriorityAvailable, campaignByGame[pgKey])
 			}
 		}
 	}
@@ -1173,6 +1276,7 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 		filtered = append(filtered, game)
 	}
 	sortedGames = filtered
+	sortedGames = a.stabilizeCurrentFarmingGame(sortedGames, gameRanks, campaignByGame)
 
 	return sortedGames
 }
