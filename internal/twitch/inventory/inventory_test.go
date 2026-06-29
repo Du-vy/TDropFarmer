@@ -3,7 +3,9 @@ package inventory
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/Du-vy/TDropFarmer/internal/twitch/gql"
 )
@@ -312,6 +314,103 @@ func TestGetActiveCampaignGamesAllowsNilPreconditions(t *testing.T) {
 	}
 }
 
+func TestGetActiveCampaignGamesSkipsCampaignWithoutCompletableDrops(t *testing.T) {
+	now := time.Now().UTC()
+	startAt := now.Add(-time.Hour).Format(time.RFC3339Nano)
+	endAt := now.Add(30 * time.Minute).Format(time.RFC3339Nano)
+	dashboard := []byte(`{
+		"currentUser": {
+			"dropCampaigns": [
+				{"id": "late", "status": "ACTIVE", "game": {"displayName": "Too Late"}}
+			]
+		}
+	}`)
+	details := []byte(fmt.Sprintf(`{
+		"user": {"dropCampaign": {
+			"id": "late",
+			"status": "ACTIVE",
+			"startAt": %q,
+			"endAt": %q,
+			"self": {"isAccountConnected": true},
+			"game": {"displayName": "Too Late"},
+			"timeBasedDrops": [
+				{"requiredMinutesWatched": 60, "self": {"hasPreconditionsMet": true, "isClaimed": false}}
+			]
+		}}
+	}`, startAt, endAt))
+
+	client := campaignGamesGQLClient{
+		dashboard: dashboard,
+		details: map[string][]byte{
+			"late": details,
+		},
+	}
+	games, unconnected, _, err := Client{Client: client, UserID: "805921782"}.GetActiveCampaignGames(context.Background())
+	if err != nil {
+		t.Fatalf("GetActiveCampaignGames returned error: %v", err)
+	}
+
+	if len(games) != 0 || len(unconnected) != 0 {
+		t.Fatalf("expected no games, got connected:%v unconnected:%v", games, unconnected)
+	}
+}
+
+func TestGetActiveCampaignGamesAllowsCampaignWithCompletableDropWindow(t *testing.T) {
+	now := time.Now().UTC()
+	startAt := now.Add(-time.Hour).Format(time.RFC3339Nano)
+	soonEndAt := now.Add(30 * time.Minute).Format(time.RFC3339Nano)
+	laterEndAt := now.Add(3 * time.Hour).Format(time.RFC3339Nano)
+	dashboard := []byte(`{
+		"currentUser": {
+			"dropCampaigns": [
+				{"id": "bdo", "status": "ACTIVE", "game": {"displayName": "Black Desert"}}
+			]
+		}
+	}`)
+	details := []byte(fmt.Sprintf(`{
+		"user": {"dropCampaign": {
+			"id": "bdo",
+			"status": "ACTIVE",
+			"startAt": %q,
+			"endAt": %q,
+			"self": {"isAccountConnected": true},
+			"game": {"displayName": "Black Desert"},
+			"timeBasedDrops": [
+				{
+					"startAt": %q,
+					"endAt": %q,
+					"requiredMinutesWatched": 60,
+					"self": {"hasPreconditionsMet": true, "isClaimed": false}
+				},
+				{
+					"startAt": %q,
+					"endAt": %q,
+					"requiredMinutesWatched": 60,
+					"self": {"hasPreconditionsMet": true, "isClaimed": false}
+				}
+			]
+		}}
+	}`, startAt, laterEndAt, startAt, soonEndAt, startAt, laterEndAt))
+
+	client := campaignGamesGQLClient{
+		dashboard: dashboard,
+		details: map[string][]byte{
+			"bdo": details,
+		},
+	}
+	games, unconnected, _, err := Client{Client: client, UserID: "805921782"}.GetActiveCampaignGames(context.Background())
+	if err != nil {
+		t.Fatalf("GetActiveCampaignGames returned error: %v", err)
+	}
+
+	if len(games) != 1 || games[0] != "Black Desert" {
+		t.Fatalf("expected Black Desert, got connected:%v unconnected:%v", games, unconnected)
+	}
+	if len(unconnected) != 0 {
+		t.Fatalf("expected 0 unconnected games, got %v", unconnected)
+	}
+}
+
 func TestGetInventoryNilPreconditionsNotEarnable(t *testing.T) {
 	mockResponse := `{"currentUser":{"inventory":{"dropCampaignsInProgress":[
 		{
@@ -450,7 +549,7 @@ func TestGetActiveCampaignGamesSkipsIgnoredGames(t *testing.T) {
 		dashboard: dashboard,
 		details: map[string][]byte{
 			"specialevents": specialEventsDetails,
-			"overwatch":      earnableOverwatch,
+			"overwatch":     earnableOverwatch,
 		},
 	}
 	games, unconnected, _, err := Client{
@@ -473,4 +572,3 @@ func TestGetActiveCampaignGamesSkipsIgnoredGames(t *testing.T) {
 		t.Fatalf("expected Overwatch, got %v", games[0])
 	}
 }
-

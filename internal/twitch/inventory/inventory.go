@@ -24,6 +24,9 @@ const (
 
 	campaignDetailsOperation = "DropCampaignDetails"
 	campaignDetailsHash      = "039277bf98f3130929262cc7c6efd9c141ca3749cb6dca442fc8ead9a53f77c1"
+
+	// Leave room for discovery, scheduling, and watch telemetry delays.
+	dropCompletionSafetyBuffer = 10 * time.Minute
 )
 
 type GQLClient interface {
@@ -250,7 +253,7 @@ type inventoryResponse struct {
 							ImageAssetURL string `json:"imageAssetURL"`
 						} `json:"benefit"`
 					} `json:"benefitEdges"`
-					Self                   struct {
+					Self struct {
 						CurrentMinutesWatched int     `json:"currentMinutesWatched"`
 						HasPreconditionsMet   *bool   `json:"hasPreconditionsMet"`
 						DropInstanceID        *string `json:"dropInstanceID"`
@@ -304,7 +307,7 @@ type campaignDetailsResponse struct {
 						ImageAssetURL string `json:"imageAssetURL"`
 					} `json:"benefit"`
 				} `json:"benefitEdges"`
-				Self                   struct {
+				Self struct {
 					HasPreconditionsMet *bool `json:"hasPreconditionsMet"`
 					IsClaimed           bool  `json:"isClaimed"`
 				} `json:"self"`
@@ -568,11 +571,40 @@ func campaignDetailEarnable(now time.Time, data *campaignDetailsResponse, claime
 		if !preconditionsMet {
 			continue
 		}
-		if campaignDropActive(now, campaign.Status, campaign.StartAt, campaign.EndAt, drop.StartAt, drop.EndAt) {
+		isActive := campaignDropActive(now, campaign.Status, campaign.StartAt, campaign.EndAt, drop.StartAt, drop.EndAt)
+		if isActive && campaignDropCompletable(now, campaign.EndAt, drop.EndAt, drop.RequiredMinutesWatched) {
 			hasEarnableDrop = true
 		}
 	}
 	return hasEarnableDrop, isConnected
+}
+
+func campaignDropCompletable(now time.Time, campaignEnd, dropEnd string, requiredMinutes int) bool {
+	deadline, hasDeadline := earliestDropDeadline(campaignEnd, dropEnd)
+	if !hasDeadline {
+		return true
+	}
+	required := time.Duration(requiredMinutes)*time.Minute + dropCompletionSafetyBuffer
+	return deadline.Sub(now) >= required
+}
+
+func earliestDropDeadline(campaignEnd, dropEnd string) (time.Time, bool) {
+	var deadline time.Time
+	hasDeadline := false
+	for _, value := range []string{campaignEnd, dropEnd} {
+		if value == "" {
+			continue
+		}
+		parsed, err := parseTwitchTime(value)
+		if err != nil {
+			continue
+		}
+		if !hasDeadline || parsed.Before(deadline) {
+			deadline = parsed
+			hasDeadline = true
+		}
+	}
+	return deadline, hasDeadline
 }
 
 func campaignDetailGameName(data *campaignDetailsResponse) string {
