@@ -258,6 +258,7 @@ type viewerCampaignsResponse struct {
 			Game   struct {
 				ID          string `json:"id"`
 				DisplayName string `json:"displayName"`
+				BoxArtURL   string `json:"boxArtURL"`
 			} `json:"game"`
 		} `json:"dropCampaigns"`
 	} `json:"currentUser"`
@@ -430,7 +431,7 @@ func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, []string,
 
 		if detail != nil && detail.User != nil && detail.User.DropCampaign != nil {
 			cCampaign := detail.User.DropCampaign
-			gameImageURL := cleanTwitchImageURL(cCampaign.Game.BoxArtURL)
+			gameImageURL := cleanTwitchImageURL(campaign.Game.BoxArtURL)
 			for _, td := range cCampaign.TimeBasedDrops {
 				var imageURL string
 				if len(td.BenefitEdges) > 0 {
