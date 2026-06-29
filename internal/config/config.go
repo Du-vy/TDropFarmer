@@ -25,6 +25,7 @@ type WatchConfig struct {
 	PriorityGames        []string `json:"priority_games"`
 	FallbackAllCampaigns bool     `json:"fallback_all_campaigns"`
 	AutoStartCampaigns   bool     `json:"auto_start_campaigns"`
+	IgnoredGames         []string `json:"ignored_games"`
 }
 
 type FeatureConfig struct {

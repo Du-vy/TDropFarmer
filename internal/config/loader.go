@@ -46,6 +46,10 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Watch.TickSeconds = 20
 	}
 
+	if cfg.Watch.IgnoredGames == nil {
+		cfg.Watch.IgnoredGames = []string{"Special Events", "Just Chatting"}
+	}
+
 	if cfg.Features.ClaimBonuses == nil {
 		cfg.Features.ClaimBonuses = Bool(true)
 	}
@@ -80,5 +84,8 @@ func Normalize(cfg *Config) {
 	}
 	for i := range cfg.Watch.PriorityGames {
 		cfg.Watch.PriorityGames[i] = strings.TrimSpace(cfg.Watch.PriorityGames[i])
+	}
+	for i := range cfg.Watch.IgnoredGames {
+		cfg.Watch.IgnoredGames[i] = strings.TrimSpace(cfg.Watch.IgnoredGames[i])
 	}
 }

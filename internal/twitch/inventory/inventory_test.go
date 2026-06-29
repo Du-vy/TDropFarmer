@@ -414,3 +414,63 @@ func TestGetActiveCampaignGamesSkipsGlobalClaimedCampaigns(t *testing.T) {
 	}
 }
 
+func TestGetActiveCampaignGamesSkipsIgnoredGames(t *testing.T) {
+	dashboard := []byte(`{
+		"currentUser": {
+			"dropCampaigns": [
+				{"id": "specialevents", "status": "ACTIVE", "game": {"displayName": "Special Events"}},
+				{"id": "overwatch", "status": "ACTIVE", "game": {"displayName": "Overwatch"}}
+			]
+		}
+	}`)
+	specialEventsDetails := []byte(`{
+		"user": {"dropCampaign": {
+			"id": "specialevents",
+			"status": "ACTIVE",
+			"self": {"isAccountConnected": true},
+			"game": {"displayName": "Special Events"},
+			"timeBasedDrops": [
+				{"requiredMinutesWatched": 60, "self": {"hasPreconditionsMet": true, "isClaimed": false}}
+			]
+		}}
+	}`)
+	earnableOverwatch := []byte(`{
+		"user": {"dropCampaign": {
+			"id": "overwatch",
+			"status": "ACTIVE",
+			"self": {"isAccountConnected": true},
+			"game": {"displayName": "Overwatch"},
+			"timeBasedDrops": [
+				{"requiredMinutesWatched": 60, "self": {"hasPreconditionsMet": true, "isClaimed": false}}
+			]
+		}}
+	}`)
+
+	client := campaignGamesGQLClient{
+		dashboard: dashboard,
+		details: map[string][]byte{
+			"specialevents": specialEventsDetails,
+			"overwatch":      earnableOverwatch,
+		},
+	}
+	games, unconnected, _, err := Client{
+		Client:       client,
+		UserID:       "805921782",
+		IgnoredGames: []string{"Special Events"},
+	}.GetActiveCampaignGames(context.Background())
+	if err != nil {
+		t.Fatalf("GetActiveCampaignGames returned error: %v", err)
+	}
+
+	expected := []string{"Overwatch"}
+	if len(games) != len(expected) {
+		t.Fatalf("expected %v, got %v", expected, games)
+	}
+	if len(unconnected) != 0 {
+		t.Fatalf("expected 0 unconnected games, got %v", unconnected)
+	}
+	if games[0] != "Overwatch" {
+		t.Fatalf("expected Overwatch, got %v", games[0])
+	}
+}
+

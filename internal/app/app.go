@@ -141,7 +141,7 @@ func (a *App) Run(ctx context.Context) error {
 	// Load initial active games from inventory or active campaigns if drops are enabled
 	var initialActiveGames []string
 	if a.config.Features.ClaimDropsEnabled() {
-		inventoryClient := inventory.Client{Client: gqlClient, UserID: a.userID, Logger: a.logger}
+		inventoryClient := inventory.Client{Client: gqlClient, UserID: a.userID, Logger: a.logger, IgnoredGames: a.config.Watch.IgnoredGames}
 		drops, errInv := inventoryClient.GetInventory(ctx)
 		if errInv != nil {
 			a.logger.Warn("initial inventory fetch failed", slog.String("error", errInv.Error()))
@@ -221,7 +221,7 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	if a.config.Features.ClaimDropsEnabled() {
-		inventoryClient := inventory.Client{Client: gqlClient, UserID: a.userID, Logger: a.logger}
+		inventoryClient := inventory.Client{Client: gqlClient, UserID: a.userID, Logger: a.logger, IgnoredGames: a.config.Watch.IgnoredGames}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

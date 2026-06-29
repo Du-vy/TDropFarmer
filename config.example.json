@@ -6,7 +6,8 @@
     "tick_seconds": 20,
     "priority_games": ["Smite", "Destiny 2"],
     "fallback_all_campaigns": false,
-    "auto_start_campaigns": false
+    "auto_start_campaigns": false,
+    "ignored_games": ["Special Events", "Just Chatting"]
   },
   "features": {
     "claim_bonuses": true,

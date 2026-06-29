@@ -31,9 +31,19 @@ type GQLClient interface {
 }
 
 type Client struct {
-	Client GQLClient
-	UserID string
-	Logger *slog.Logger
+	Client       GQLClient
+	UserID       string
+	Logger       *slog.Logger
+	IgnoredGames []string
+}
+
+func (c Client) isIgnored(gameName string) bool {
+	for _, ig := range c.IgnoredGames {
+		if strings.EqualFold(ig, gameName) {
+			return true
+		}
+	}
+	return false
 }
 
 type Drop struct {
@@ -86,6 +96,9 @@ func (c Client) GetInventory(ctx context.Context) ([]Drop, error) {
 	now := time.Now().UTC()
 	var drops []Drop
 	for _, campaign := range data.CurrentUser.Inventory.DropCampaignsInProgress {
+		if c.isIgnored(campaign.Game.Name) {
+			continue
+		}
 		gameImageURL := cleanTwitchImageURL(campaign.Game.BoxArtURL)
 
 		for _, td := range campaign.TimeBasedDrops {
@@ -384,6 +397,9 @@ func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, []string,
 
 	for _, campaign := range data.CurrentUser.DropCampaigns {
 		if campaign.Status != "ACTIVE" {
+			continue
+		}
+		if c.isIgnored(campaign.Game.DisplayName) {
 			continue
 		}
 
