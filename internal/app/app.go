@@ -149,7 +149,7 @@ func (a *App) Run(ctx context.Context) error {
 			a.dropsMu.Lock()
 			a.lastDrops = drops
 			a.dropsMu.Unlock()
-			initialActiveGames = a.sortActiveGames(ctx, inventoryClient, drops)
+			initialActiveGames = a.sortActiveGames(ctx, inventoryClient, drops, "")
 		}
 		a.activeGamesMu.Lock()
 		a.activeGames = initialActiveGames
@@ -459,7 +459,7 @@ func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invCli
 		}
 	}
 
-	activeGames := a.sortActiveGames(ctx, invClient, drops)
+	activeGames := a.sortActiveGames(ctx, invClient, drops, a.activeDynamicDropGame(eng))
 
 	a.activeGamesMu.Lock()
 	a.activeGames = activeGames
@@ -559,6 +559,27 @@ func (a *App) hasActiveDynamicDropStreamer(eng *engine.Engine) bool {
 		}
 	}
 	return false
+}
+
+func (a *App) activeDynamicDropGame(eng *engine.Engine) string {
+	active := eng.ActiveStreamers()
+	if len(active) == 0 {
+		return ""
+	}
+
+	activeLogins := make(map[string]bool, len(active))
+	for _, login := range active {
+		activeLogins[login] = true
+	}
+
+	a.streamersMu.RLock()
+	defer a.streamersMu.RUnlock()
+	for _, streamer := range a.dynamicStreamers {
+		if activeLogins[streamer.Login] && streamer.GameName != "" {
+			return streamer.GameName
+		}
+	}
+	return ""
 }
 
 func (a *App) getStreamersToPoll(eng *engine.Engine) []domain.Streamer {
@@ -1072,21 +1093,18 @@ const (
 	activeGameRankOtherAvailable
 )
 
-func appendActiveGame(games *[]string, ranks map[string]int, campaignIDs map[string]string, gameName string, rank int, campaignID string) {
+func appendActiveGame(games *[]string, ranks map[string]int, gameName string, rank int) {
 	if gameName == "" {
 		return
 	}
 	key := gameKey(gameName)
 	*games = append(*games, gameName)
 	ranks[key] = rank
-	if campaignID != "" {
-		campaignIDs[key] = campaignID
-	}
 }
 
-func (a *App) stabilizeCurrentFarmingGame(sortedGames []string, ranks map[string]int, campaignIDs map[string]string) []string {
-	currentCampaignID := a.currentFarmingCampaignSnapshot()
-	if currentCampaignID == "" || len(sortedGames) < 2 {
+func (a *App) stabilizeCurrentFarmingGame(sortedGames []string, ranks map[string]int, stickyGameName string) []string {
+	stickyKey := gameKey(stickyGameName)
+	if stickyKey == "" || len(sortedGames) < 2 {
 		return sortedGames
 	}
 
@@ -1094,7 +1112,7 @@ func (a *App) stabilizeCurrentFarmingGame(sortedGames []string, ranks map[string
 	currentRank := 0
 	for i, game := range sortedGames {
 		key := gameKey(game)
-		if campaignIDs[key] == currentCampaignID {
+		if key == stickyKey {
 			currentIndex = i
 			currentRank = ranks[key]
 			break
@@ -1124,11 +1142,10 @@ func (a *App) stabilizeCurrentFarmingGame(sortedGames []string, ranks map[string
 	return reordered
 }
 
-func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, drops []inventory.Drop) []string {
+func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, drops []inventory.Drop, stickyGameName string) []string {
 	// Categorize in-progress games
 	var priorityInProgress []string
 	var otherInProgress []string
-	campaignByGame := make(map[string]string)
 	inProgressMap := make(map[string]bool)
 	addedInProgress := make(map[string]bool)
 
@@ -1140,9 +1157,6 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 		if drop.GameName != "" {
 			key := gameKey(drop.GameName)
 			hasAnyDrops[key] = true
-			if campaignByGame[key] == "" && drop.CampaignID != "" {
-				campaignByGame[key] = drop.CampaignID
-			}
 			if !drop.IsClaimed {
 				hasUnclaimed[key] = true
 				inProgressMap[key] = true
@@ -1178,12 +1192,6 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 			a.dropsMu.Lock()
 			a.lastActiveCampaignDrops = allDrops
 			a.dropsMu.Unlock()
-			for _, drop := range allDrops {
-				key := gameKey(drop.GameName)
-				if key != "" && campaignByGame[key] == "" && drop.CampaignID != "" {
-					campaignByGame[key] = drop.CampaignID
-				}
-			}
 			seenConnected := make(map[string]bool)
 			for _, game := range availableConnected {
 				if game == "" || inProgressMap[gameKey(game)] {
@@ -1216,32 +1224,32 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 
 	if useFallbackAllCampaigns {
 		for _, game := range priorityInProgress {
-			appendActiveGame(&sortedGames, gameRanks, campaignByGame, game, activeGameRankPriorityInProgress, campaignByGame[gameKey(game)])
+			appendActiveGame(&sortedGames, gameRanks, game, activeGameRankPriorityInProgress)
 		}
 		for _, game := range priorityConnectedAvailable {
-			appendActiveGame(&sortedGames, gameRanks, campaignByGame, game, activeGameRankPriorityAvailable, campaignByGame[gameKey(game)])
+			appendActiveGame(&sortedGames, gameRanks, game, activeGameRankPriorityAvailable)
 		}
 		for _, game := range priorityUnconnectedAvailable {
-			appendActiveGame(&sortedGames, gameRanks, campaignByGame, game, activeGameRankPriorityAvailable, campaignByGame[gameKey(game)])
+			appendActiveGame(&sortedGames, gameRanks, game, activeGameRankPriorityAvailable)
 		}
 		for _, game := range otherInProgress {
-			appendActiveGame(&sortedGames, gameRanks, campaignByGame, game, activeGameRankOtherInProgress, campaignByGame[gameKey(game)])
+			appendActiveGame(&sortedGames, gameRanks, game, activeGameRankOtherInProgress)
 		}
 		for _, game := range otherConnectedAvailable {
-			appendActiveGame(&sortedGames, gameRanks, campaignByGame, game, activeGameRankOtherAvailable, campaignByGame[gameKey(game)])
+			appendActiveGame(&sortedGames, gameRanks, game, activeGameRankOtherAvailable)
 		}
 		for _, game := range otherUnconnectedAvailable {
-			appendActiveGame(&sortedGames, gameRanks, campaignByGame, game, activeGameRankOtherAvailable, campaignByGame[gameKey(game)])
+			appendActiveGame(&sortedGames, gameRanks, game, activeGameRankOtherAvailable)
 		}
 	} else {
 		for _, game := range priorityInProgress {
-			appendActiveGame(&sortedGames, gameRanks, campaignByGame, game, activeGameRankPriorityInProgress, campaignByGame[gameKey(game)])
+			appendActiveGame(&sortedGames, gameRanks, game, activeGameRankPriorityInProgress)
 		}
 		for _, game := range priorityConnectedAvailable {
-			appendActiveGame(&sortedGames, gameRanks, campaignByGame, game, activeGameRankPriorityAvailable, campaignByGame[gameKey(game)])
+			appendActiveGame(&sortedGames, gameRanks, game, activeGameRankPriorityAvailable)
 		}
 		for _, game := range priorityUnconnectedAvailable {
-			appendActiveGame(&sortedGames, gameRanks, campaignByGame, game, activeGameRankPriorityAvailable, campaignByGame[gameKey(game)])
+			appendActiveGame(&sortedGames, gameRanks, game, activeGameRankPriorityAvailable)
 		}
 		for _, pg := range a.config.Watch.PriorityGames {
 			pgKey := gameKey(pg)
@@ -1257,7 +1265,7 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 				}
 			}
 			if !found {
-				appendActiveGame(&sortedGames, gameRanks, campaignByGame, pg, activeGameRankPriorityAvailable, campaignByGame[pgKey])
+				appendActiveGame(&sortedGames, gameRanks, pg, activeGameRankPriorityAvailable)
 			}
 		}
 	}
@@ -1276,7 +1284,7 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 		filtered = append(filtered, game)
 	}
 	sortedGames = filtered
-	sortedGames = a.stabilizeCurrentFarmingGame(sortedGames, gameRanks, campaignByGame)
+	sortedGames = a.stabilizeCurrentFarmingGame(sortedGames, gameRanks, stickyGameName)
 
 	return sortedGames
 }

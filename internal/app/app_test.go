@@ -171,7 +171,7 @@ func TestSortActiveGames(t *testing.T) {
 		{GameName: "Corepunk", IsEarnable: true},
 	}
 
-	sorted := app.sortActiveGames(context.Background(), invClient, drops)
+	sorted := app.sortActiveGames(context.Background(), invClient, drops, "")
 	// Expected Order:
 	// Priority games in progress: "Corepunk"
 	// Priority games available (active campaign but not in progress): "Overwatch"
@@ -189,7 +189,7 @@ func TestSortActiveGames(t *testing.T) {
 
 	// 2. Case where FallbackAllCampaigns is false
 	app.config.Watch.FallbackAllCampaigns = false
-	sorted = app.sortActiveGames(context.Background(), invClient, drops)
+	sorted = app.sortActiveGames(context.Background(), invClient, drops, "")
 	// Expected Order:
 	// Only Priority games (in progress first, then available, then remaining configured):
 	// "Corepunk", "Overwatch"
@@ -212,7 +212,7 @@ func TestSortActiveGames(t *testing.T) {
 		// Game: Corepunk (Priority, in progress and earnable)
 		{GameName: "Corepunk", IsEarnable: true, IsClaimed: false},
 	}
-	sorted = app.sortActiveGames(context.Background(), invClient, drops)
+	sorted = app.sortActiveGames(context.Background(), invClient, drops, "")
 	// Expected: "Corepunk" (in progress) and "Overwatch" (available).
 	// "THE FINALS" should be excluded because all of its drops are claimed/completed.
 	expected = []string{"Corepunk", "Overwatch"}
@@ -232,7 +232,7 @@ func TestSortActiveGames(t *testing.T) {
 		{GameName: "THE FINALS", IsEarnable: false, IsClaimed: true},
 		{GameName: "Corepunk", IsEarnable: true, IsClaimed: false},
 	}
-	sorted = app.sortActiveGames(context.Background(), invClient, drops)
+	sorted = app.sortActiveGames(context.Background(), invClient, drops, "")
 	for _, game := range sorted {
 		if strings.EqualFold(game, "THE FINALS") {
 			t.Errorf("THE FINALS should be excluded when all drops are claimed, got sorted = %v", sorted)
@@ -296,7 +296,7 @@ func TestSortActiveGamesPrioritizesConnectedOverUnconnected(t *testing.T) {
 	}
 	invClient := inventory.Client{Client: mockClient, UserID: "805921782"}
 
-	sorted := app.sortActiveGames(context.Background(), invClient, nil)
+	sorted := app.sortActiveGames(context.Background(), invClient, nil, "")
 	// Expected Order:
 	// 1. Priority connected: "ConnectedPriority"
 	// 2. Priority unconnected: "UnconnectedPriority"
@@ -327,8 +327,6 @@ func TestSortActiveGamesKeepsCurrentCampaignWithinSamePriorityBucket(t *testing.
 		},
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	app.currentFarmingCampaign = "black-desert-campaign"
-
 	invClient := inventory.Client{Client: mockInventoryGQLClient{
 		dashboardResponse: []byte(`{"currentUser":{"dropCampaigns":[]}}`),
 	}, UserID: "805921782"}
@@ -337,7 +335,7 @@ func TestSortActiveGamesKeepsCurrentCampaignWithinSamePriorityBucket(t *testing.
 		{GameName: "Black Desert", CampaignID: "black-desert-campaign", IsEarnable: true, IsClaimed: false},
 	}
 
-	sorted := app.sortActiveGames(context.Background(), invClient, drops)
+	sorted := app.sortActiveGames(context.Background(), invClient, drops, "Black Desert")
 
 	if len(sorted) < 2 {
 		t.Fatalf("expected at least 2 games, got %v", sorted)
@@ -361,8 +359,6 @@ func TestSortActiveGamesPriorityCampaignPreemptsCurrentNonPriorityCampaign(t *te
 		},
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	app.currentFarmingCampaign = "black-desert-campaign"
-
 	invClient := inventory.Client{Client: mockInventoryGQLClient{
 		dashboardResponse: []byte(`{"currentUser":{"dropCampaigns":[]}}`),
 	}, UserID: "805921782"}
@@ -372,7 +368,7 @@ func TestSortActiveGamesPriorityCampaignPreemptsCurrentNonPriorityCampaign(t *te
 		{GameName: "Warframe", CampaignID: "warframe-campaign", IsEarnable: true, IsClaimed: false},
 	}
 
-	sorted := app.sortActiveGames(context.Background(), invClient, drops)
+	sorted := app.sortActiveGames(context.Background(), invClient, drops, "Black Desert")
 
 	if len(sorted) == 0 || sorted[0] != "Warframe" {
 		t.Fatalf("expected priority campaign to preempt current non-priority campaign, got %v", sorted)
