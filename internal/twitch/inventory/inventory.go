@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -41,12 +42,20 @@ type Drop struct {
 	CampaignID      string
 	CampaignName    string
 	GameName        string
+	GameImageURL    string
+	ImageURL        string
 	RequiredMinutes int
 	CurrentMinutes  int
 	DropInstanceID  string
 	IsClaimed       bool
 	IsClaimable     bool
 	IsEarnable      bool
+}
+
+var dimsRegex = regexp.MustCompile(`-\d+x\d+(\.(?:jpg|png|gif|jpeg|webp))$`)
+
+func cleanTwitchImageURL(url string) string {
+	return dimsRegex.ReplaceAllString(url, "$1")
 }
 
 func (c Client) GetInventory(ctx context.Context) ([]Drop, error) {
@@ -77,6 +86,8 @@ func (c Client) GetInventory(ctx context.Context) ([]Drop, error) {
 	now := time.Now().UTC()
 	var drops []Drop
 	for _, campaign := range data.CurrentUser.Inventory.DropCampaignsInProgress {
+		gameImageURL := cleanTwitchImageURL(campaign.Game.BoxArtURL)
+
 		for _, td := range campaign.TimeBasedDrops {
 			var dropInstanceID string
 			if td.Self.DropInstanceID != nil {
@@ -87,12 +98,19 @@ func (c Client) GetInventory(ctx context.Context) ([]Drop, error) {
 			preconditionsMet := td.Self.HasPreconditionsMet != nil && *td.Self.HasPreconditionsMet
 			isEarnable := !td.Self.IsClaimed && preconditionsMet && campaignDropActive(now, campaign.Status, campaign.StartAt, campaign.EndAt, td.StartAt, td.EndAt)
 
+			var imageURL string
+			if len(td.BenefitEdges) > 0 {
+				imageURL = td.BenefitEdges[0].Benefit.ImageAssetURL
+			}
+
 			drops = append(drops, Drop{
 				ID:              td.ID,
 				Name:            td.Name,
 				CampaignID:      campaign.ID,
 				CampaignName:    campaign.Name,
 				GameName:        campaign.Game.Name,
+				GameImageURL:    gameImageURL,
+				ImageURL:        imageURL,
 				RequiredMinutes: td.RequiredMinutesWatched,
 				CurrentMinutes:  td.Self.CurrentMinutesWatched,
 				DropInstanceID:  dropInstanceID,
@@ -201,9 +219,10 @@ type inventoryResponse struct {
 				StartAt string `json:"startAt"`
 				EndAt   string `json:"endAt"`
 				Game    struct {
-					ID   string `json:"id"`
-					Name string `json:"name"`
-					Slug string `json:"slug"`
+					ID        string `json:"id"`
+					Name      string `json:"name"`
+					Slug      string `json:"slug"`
+					BoxArtURL string `json:"boxArtURL"`
 				} `json:"game"`
 				TimeBasedDrops []struct {
 					ID                     string `json:"id"`
@@ -211,6 +230,13 @@ type inventoryResponse struct {
 					StartAt                string `json:"startAt"`
 					EndAt                  string `json:"endAt"`
 					RequiredMinutesWatched int    `json:"requiredMinutesWatched"`
+					BenefitEdges           []struct {
+						Benefit struct {
+							ID            string `json:"id"`
+							Name          string `json:"name"`
+							ImageAssetURL string `json:"imageAssetURL"`
+						} `json:"benefit"`
+					} `json:"benefitEdges"`
 					Self                   struct {
 						CurrentMinutesWatched int     `json:"currentMinutesWatched"`
 						HasPreconditionsMet   *bool   `json:"hasPreconditionsMet"`
@@ -251,6 +277,7 @@ type campaignDetailsResponse struct {
 			Game struct {
 				Name        string `json:"name"`
 				DisplayName string `json:"displayName"`
+				BoxArtURL   string `json:"boxArtURL"`
 			} `json:"game"`
 			TimeBasedDrops []struct {
 				ID                     string `json:"id"`
@@ -259,7 +286,8 @@ type campaignDetailsResponse struct {
 				RequiredMinutesWatched int    `json:"requiredMinutesWatched"`
 				BenefitEdges           []struct {
 					Benefit struct {
-						Name string `json:"name"`
+						Name          string `json:"name"`
+						ImageAssetURL string `json:"imageAssetURL"`
 					} `json:"benefit"`
 				} `json:"benefitEdges"`
 				Self                   struct {

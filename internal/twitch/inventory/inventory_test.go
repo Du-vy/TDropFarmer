@@ -47,13 +47,23 @@ func TestGetInventory(t *testing.T) {
 			"game": {
 				"id": "game-1",
 				"name": "Game 1",
-				"slug": "game-1"
+				"slug": "game-1",
+				"boxArtURL": "https://static-cdn.jtvnw.net/ttv-boxart/game-1-285x380.jpg"
 			},
 			"timeBasedDrops": [
 				{
 					"id": "drop-1",
 					"name": "Drop 1",
 					"requiredMinutesWatched": 60,
+					"benefitEdges": [
+						{
+							"benefit": {
+								"id": "benefit-1",
+								"name": "Benefit 1",
+								"imageAssetURL": "https://static-cdn.jtvnw.net/twitch-quests-assets/REWARD/drop-1.png"
+							}
+						}
+					],
 					"self": {
 						"currentMinutesWatched": 45,
 						"hasPreconditionsMet": true,
@@ -94,6 +104,14 @@ func TestGetInventory(t *testing.T) {
 
 	if drops[0].ID != "drop-1" || drops[0].CurrentMinutes != 45 || drops[0].IsClaimable || !drops[0].IsEarnable || drops[0].GameName != "Game 1" {
 		t.Errorf("drop 0 incorrect: %+v", drops[0])
+	}
+
+	if drops[0].GameImageURL != "https://static-cdn.jtvnw.net/ttv-boxart/game-1.jpg" {
+		t.Errorf("expected GameImageURL to be https://static-cdn.jtvnw.net/ttv-boxart/game-1.jpg, got %q", drops[0].GameImageURL)
+	}
+
+	if drops[0].ImageURL != "https://static-cdn.jtvnw.net/twitch-quests-assets/REWARD/drop-1.png" {
+		t.Errorf("expected ImageURL to be https://static-cdn.jtvnw.net/twitch-quests-assets/REWARD/drop-1.png, got %q", drops[0].ImageURL)
 	}
 
 	if drops[1].ID != "drop-2" || drops[1].CurrentMinutes != 60 || !drops[1].IsClaimable || !drops[1].IsEarnable || drops[1].DropInstanceID != "instance-2" || drops[1].GameName != "Game 1" {

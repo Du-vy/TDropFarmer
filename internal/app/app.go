@@ -28,17 +28,20 @@ import (
 )
 
 type App struct {
-	config           config.Config
-	logger           *slog.Logger
-	tokenStore       auth.TokenStore
-	chatMu           sync.Mutex
-	chatCancels      map[string]context.CancelFunc
-	streamersMu      sync.RWMutex
-	staticStreamers  []domain.Streamer
-	dynamicStreamers []domain.Streamer
-	activeGamesMu    sync.RWMutex
-	activeGames      []string
-	userID           string
+	config                 config.Config
+	logger                 *slog.Logger
+	tokenStore             auth.TokenStore
+	chatMu                 sync.Mutex
+	chatCancels            map[string]context.CancelFunc
+	streamersMu            sync.RWMutex
+	staticStreamers        []domain.Streamer
+	dynamicStreamers       []domain.Streamer
+	activeGamesMu          sync.RWMutex
+	activeGames            []string
+	userID                 string
+	dropsMu                sync.RWMutex
+	lastDrops              []inventory.Drop
+	currentFarmingCampaign string
 }
 
 type gameStreamDiscoverer interface {
@@ -142,6 +145,9 @@ func (a *App) Run(ctx context.Context) error {
 		if errInv != nil {
 			a.logger.Warn("initial inventory fetch failed", slog.String("error", errInv.Error()))
 		} else {
+			a.dropsMu.Lock()
+			a.lastDrops = drops
+			a.dropsMu.Unlock()
 			initialActiveGames = a.sortActiveGames(ctx, inventoryClient, drops)
 		}
 		a.activeGamesMu.Lock()
@@ -239,19 +245,152 @@ func (a *App) Run(ctx context.Context) error {
 				if a.shouldJoinChat(event.Streamer) {
 					a.startChat(ctx, eng, event.Streamer, token.AccessToken)
 				}
+
+				if notifier != nil {
+					s := a.findCombinedStreamer(event.Streamer)
+					if s != nil && s.GameName != "" {
+						a.dropsMu.RLock()
+						var campaignName string
+						var campaignID string
+						var gameImageURL string
+						var dropList []string
+						seenDrops := make(map[string]bool)
+
+						for _, d := range a.lastDrops {
+							if strings.EqualFold(d.GameName, s.GameName) {
+								if campaignName == "" {
+									campaignName = d.CampaignName
+									if campaignName == "" {
+										campaignName = d.CampaignID
+									}
+									campaignID = d.CampaignID
+									gameImageURL = d.GameImageURL
+								}
+								if !seenDrops[d.ID] {
+									seenDrops[d.ID] = true
+									status := fmt.Sprintf("%d/%d min", d.CurrentMinutes, d.RequiredMinutes)
+									if d.IsClaimed {
+										status = "Claimed"
+									} else if d.IsClaimable {
+										status = "Claimable"
+									}
+									dropList = append(dropList, fmt.Sprintf("• **%s** (%s)", d.Name, status))
+								}
+							}
+						}
+						a.dropsMu.RUnlock()
+
+						if campaignID != "" {
+							a.activeGamesMu.Lock()
+							if a.currentFarmingCampaign != campaignID {
+								a.currentFarmingCampaign = campaignID
+								a.activeGamesMu.Unlock()
+
+								var description string
+								if len(dropList) > 0 {
+									description = strings.Join(dropList, "\n")
+								} else {
+									description = "No drops found or campaign already completed."
+								}
+
+								payload := notify.WebhookPayload{
+									Embeds: []notify.Embed{
+										{
+											Title:       "Started Farming Campaign!",
+											Description: description,
+											Color:       3447003, // Slate Blue (#3498DB)
+											Author: &notify.EmbedAuthor{
+												Name: s.GameName,
+											},
+											Fields: []notify.EmbedField{
+												{
+													Name:   "Game",
+													Value:  s.GameName,
+													Inline: true,
+												},
+												{
+													Name:   "Campaign",
+													Value:  campaignName,
+													Inline: true,
+												},
+												{
+													Name:   "Streamer",
+													Value:  s.DisplayName,
+													Inline: true,
+												},
+											},
+											Footer: &notify.EmbedFooter{
+												Text: "TDropFarmer Bot - by Duvy",
+											},
+											Timestamp: time.Now().UTC().Format(time.RFC3339),
+										},
+									},
+								}
+								if gameImageURL != "" {
+									payload.Embeds[0].Author.IconURL = gameImageURL
+									payload.Embeds[0].Thumbnail = &notify.EmbedMedia{URL: gameImageURL}
+								}
+
+								go func() {
+									if err := notifier.Send(context.Background(), payload); err != nil {
+										a.logger.Warn("discord notification failed", slog.String("error", err.Error()))
+									}
+								}()
+							} else {
+								a.activeGamesMu.Unlock()
+							}
+						}
+					}
+				}
 			}
 			if event.Type == engine.EventWatchStop {
 				a.stopChat(event.Streamer)
 			}
 
 			if notifier != nil {
-				msg := a.formatEventMessage(event)
-				if msg != "" {
-					go func(message string) {
-						if err := notifier.Send(context.Background(), message); err != nil {
-							a.logger.Warn("discord notification failed", slog.String("error", err.Error()))
+				if event.Type == engine.EventDropClaimed {
+					if d, ok := event.Payload.(inventory.Drop); ok {
+						payload := notify.WebhookPayload{
+							Embeds: []notify.Embed{
+								{
+									Title: "New Drop Claimed!",
+									Color: 9520895, // Twitch Purple (#9146FF)
+									Author: &notify.EmbedAuthor{
+										Name: d.GameName,
+									},
+									Fields: []notify.EmbedField{
+										{
+											Name:   "Game",
+											Value:  d.GameName,
+											Inline: true,
+										},
+										{
+											Name:   "Item",
+											Value:  d.Name,
+											Inline: true,
+										},
+									},
+									Footer: &notify.EmbedFooter{
+										Text: "TDropFarmer Bot - by Duvy",
+									},
+									Timestamp: time.Now().UTC().Format(time.RFC3339),
+								},
+							},
 						}
-					}(msg)
+						if d.GameImageURL != "" {
+							payload.Embeds[0].Author.IconURL = d.GameImageURL
+						}
+						if d.ImageURL != "" {
+							payload.Embeds[0].Thumbnail = &notify.EmbedMedia{URL: d.ImageURL}
+						}
+
+						go func() {
+							if err := notifier.Send(context.Background(), payload); err != nil {
+								a.logger.Warn("discord notification failed", slog.String("error", err.Error()))
+							}
+						}()
+						continue
+					}
 				}
 			}
 		}
@@ -287,6 +426,10 @@ func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invCli
 		a.logger.Warn("fetch drops inventory failed", slog.String("error", err.Error()))
 		return
 	}
+
+	a.dropsMu.Lock()
+	a.lastDrops = drops
+	a.dropsMu.Unlock()
 
 	activeGamesMap := make(map[string]bool)
 	for _, drop := range drops {

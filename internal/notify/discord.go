@@ -14,6 +14,44 @@ type DiscordNotifier struct {
 	HTTPClient *http.Client
 }
 
+type EmbedField struct {
+	Name   string `json:"name"`
+	Value  string `json:"value"`
+	Inline bool   `json:"inline,omitempty"`
+}
+
+type EmbedMedia struct {
+	URL string `json:"url"`
+}
+
+type EmbedAuthor struct {
+	Name    string `json:"name"`
+	IconURL string `json:"icon_url,omitempty"`
+}
+
+type EmbedFooter struct {
+	Text    string `json:"text"`
+	IconURL string `json:"icon_url,omitempty"`
+}
+
+type Embed struct {
+	Title       string        `json:"title,omitempty"`
+	Description string        `json:"description,omitempty"`
+	Color       int           `json:"color,omitempty"`
+	Fields      []EmbedField  `json:"fields,omitempty"`
+	Thumbnail   *EmbedMedia   `json:"thumbnail,omitempty"`
+	Image       *EmbedMedia   `json:"image,omitempty"`
+	Author      *EmbedAuthor  `json:"author,omitempty"`
+	Footer      *EmbedFooter  `json:"footer,omitempty"`
+	Timestamp   string        `json:"timestamp,omitempty"`
+}
+
+type WebhookPayload struct {
+	Content  string  `json:"content,omitempty"`
+	Embeds   []Embed `json:"embeds,omitempty"`
+	Username string  `json:"username,omitempty"`
+}
+
 func NewDiscord(webhookURL string) *DiscordNotifier {
 	return &DiscordNotifier{
 		WebhookURL: webhookURL,
@@ -21,14 +59,11 @@ func NewDiscord(webhookURL string) *DiscordNotifier {
 	}
 }
 
-func (n *DiscordNotifier) Send(ctx context.Context, message string) error {
+func (n *DiscordNotifier) Send(ctx context.Context, payload WebhookPayload) error {
 	if n.WebhookURL == "" {
 		return fmt.Errorf("discord webhook url is empty")
 	}
 
-	payload := map[string]string{
-		"content": message,
-	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
