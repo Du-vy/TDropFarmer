@@ -96,6 +96,74 @@ func (m mockInventoryGQLClient) Do(ctx context.Context, req gql.Request) (gql.Re
 	return gql.Response{}, nil
 }
 
+type claimFlowGQLClient struct {
+	inventoryResponse []byte
+	claimResponse     []byte
+}
+
+func (m claimFlowGQLClient) Do(ctx context.Context, req gql.Request) (gql.Response, error) {
+	switch req.OperationName {
+	case "Inventory":
+		return gql.Response{Data: m.inventoryResponse}, nil
+	case "DropsPage_ClaimDropRewards":
+		return gql.Response{Data: m.claimResponse}, nil
+	default:
+		return gql.Response{}, nil
+	}
+}
+
+func TestCheckAndClaimDropsRemovesClaimedGameBeforeSorting(t *testing.T) {
+	app := &App{
+		config: config.Config{
+			Watch: config.WatchConfig{
+				FallbackAllCampaigns: true,
+			},
+			Features: config.FeatureConfig{
+				ClaimDrops: config.Bool(true),
+			},
+		},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	eng := engine.New(app.config, nil, logger)
+	invClient := inventory.Client{Client: claimFlowGQLClient{
+		inventoryResponse: []byte(`{"currentUser":{"inventory":{"dropCampaignsInProgress":[
+			{
+				"id":"7ds-campaign",
+				"name":"7DS Origin 2nd Drops",
+				"game":{"name":"The Seven Deadly Sins: Origin"},
+				"timeBasedDrops":[{
+					"id":"7ds-drop",
+					"name":"Regular Hero Draw Ticket x 1",
+					"requiredMinutesWatched":120,
+					"self":{"currentMinutesWatched":120,"hasPreconditionsMet":true,"dropInstanceID":"instance-7ds","isClaimed":false}
+				}]
+			},
+			{
+				"id":"rematch-campaign",
+				"name":"Rematch Nations Cup",
+				"game":{"name":"REMATCH"},
+				"timeBasedDrops":[{
+					"id":"rematch-drop",
+					"name":"Rematch Nations Cup",
+					"requiredMinutesWatched":30,
+					"self":{"currentMinutesWatched":3,"hasPreconditionsMet":true,"dropInstanceID":null,"isClaimed":false}
+				}]
+			}
+		]}}}`),
+		claimResponse: []byte(`{"claimDropRewards":{"status":"ELIGIBLE_FOR_ALL"}}`),
+	}}
+
+	app.checkAndClaimDrops(context.Background(), eng, invClient)
+
+	if len(app.activeGames) != 1 || app.activeGames[0] != "REMATCH" {
+		t.Fatalf("expected only REMATCH after claiming final 7DS drop, got %v", app.activeGames)
+	}
+	if len(app.lastDrops) == 0 || !app.lastDrops[0].IsClaimed || app.lastDrops[0].IsClaimable || app.lastDrops[0].IsEarnable {
+		t.Fatalf("expected claimed drop to be reflected in lastDrops, got %+v", app.lastDrops)
+	}
+}
+
 func TestSortActiveGames(t *testing.T) {
 	app := &App{
 		config: config.Config{

@@ -392,12 +392,9 @@ func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invCli
 		return
 	}
 
-	a.dropsMu.Lock()
-	a.lastDrops = drops
-	a.dropsMu.Unlock()
-
 	activeGamesMap := make(map[string]bool)
-	for _, drop := range drops {
+	for i := range drops {
+		drop := drops[i]
 		if !drop.IsClaimed && (drop.IsEarnable || drop.IsClaimable) {
 			campaign := drop.CampaignName
 			if campaign == "" {
@@ -445,6 +442,11 @@ func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invCli
 				continue
 			}
 			if success {
+				drops[i].IsClaimed = true
+				drops[i].IsClaimable = false
+				drops[i].IsEarnable = false
+				drop = drops[i]
+
 				a.logger.Info("drop claimed successfully",
 					slog.String("id", drop.ID),
 					slog.String("name", drop.Name),
@@ -458,6 +460,10 @@ func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invCli
 			}
 		}
 	}
+
+	a.dropsMu.Lock()
+	a.lastDrops = drops
+	a.dropsMu.Unlock()
 
 	activeGames := a.sortActiveGames(ctx, invClient, drops, a.activeDynamicDropGame(eng))
 
