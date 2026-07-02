@@ -43,6 +43,13 @@ type App struct {
 	lastDrops               []inventory.Drop
 	lastActiveCampaignDrops []inventory.Drop
 	currentFarmingCampaign  string
+	dropProgressStalls      map[string]dropProgressStallState
+}
+
+type dropProgressStallState struct {
+	streamer       string
+	progress       map[string]int
+	unchangedPolls int
 }
 
 type gameStreamDiscoverer interface {
@@ -57,7 +64,10 @@ func randomDuration(min, max time.Duration) time.Duration {
 	return min + time.Duration(rand.Int64N(int64(diff)))
 }
 
-const targetGameDiscoveryRefreshInterval = 30 * time.Minute
+const (
+	targetGameDiscoveryRefreshInterval = 30 * time.Minute
+	dropProgressStallUnchangedPolls    = 2
+)
 
 func New(cfg config.Config, logger *slog.Logger, tokenStore auth.TokenStore) *App {
 	return &App{
@@ -461,6 +471,8 @@ func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invCli
 		}
 	}
 
+	a.rotateStalledDropStreamerIfNeeded(eng, drops)
+
 	a.dropsMu.Lock()
 	a.lastDrops = drops
 	a.dropsMu.Unlock()
@@ -541,9 +553,14 @@ func topGames(games []string, limit int) []string {
 }
 
 func (a *App) activeDynamicDropGame(eng *engine.Engine) string {
+	_, game := a.activeDynamicDropStreamer(eng)
+	return game
+}
+
+func (a *App) activeDynamicDropStreamer(eng *engine.Engine) (string, string) {
 	active := eng.ActiveStreamers()
 	if len(active) == 0 {
-		return ""
+		return "", ""
 	}
 
 	activeLogins := make(map[string]bool, len(active))
@@ -555,10 +572,49 @@ func (a *App) activeDynamicDropGame(eng *engine.Engine) string {
 	defer a.streamersMu.RUnlock()
 	for _, streamer := range a.dynamicStreamers {
 		if activeLogins[streamer.Login] && streamer.GameName != "" {
-			return streamer.GameName
+			return streamer.Login, streamer.GameName
 		}
 	}
-	return ""
+	return "", ""
+}
+
+func (a *App) activeDropStreamer(eng *engine.Engine) *domain.Streamer {
+	active := eng.ActiveStreamers()
+	if len(active) == 0 {
+		return nil
+	}
+
+	activeLogins := make(map[string]bool, len(active))
+	for _, login := range active {
+		activeLogins[login] = true
+	}
+
+	activeGames := a.activeGamesSnapshot()
+	isActiveGame := func(gameName string) bool {
+		for _, activeGame := range activeGames {
+			if strings.EqualFold(gameName, activeGame) {
+				return true
+			}
+		}
+		return false
+	}
+
+	a.streamersMu.RLock()
+	defer a.streamersMu.RUnlock()
+
+	for _, streamer := range a.dynamicStreamers {
+		if activeLogins[streamer.Login] && isActiveGame(streamer.GameName) {
+			selected := streamer
+			return &selected
+		}
+	}
+	for _, streamer := range a.staticStreamers {
+		if activeLogins[streamer.Login] && isActiveGame(streamer.GameName) {
+			selected := streamer
+			return &selected
+		}
+	}
+	return nil
 }
 
 func (a *App) getStreamersToPoll(eng *engine.Engine) []domain.Streamer {
@@ -597,6 +653,108 @@ func (a *App) findCombinedStreamer(login string) *domain.Streamer {
 		}
 	}
 	return nil
+}
+
+func (a *App) removeDynamicStreamer(login string) bool {
+	a.streamersMu.Lock()
+	defer a.streamersMu.Unlock()
+
+	for i := range a.dynamicStreamers {
+		if strings.EqualFold(a.dynamicStreamers[i].Login, login) {
+			a.dynamicStreamers = append(a.dynamicStreamers[:i], a.dynamicStreamers[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) rotateStalledDropStreamerIfNeeded(eng *engine.Engine, drops []inventory.Drop) {
+	streamer, game := a.activeDynamicDropStreamer(eng)
+	if streamer == "" || game == "" {
+		return
+	}
+
+	progress := dropProgressSnapshot(drops, game)
+	key := gameKey(game)
+	if len(progress) == 0 {
+		delete(a.dropProgressStalls, key)
+		return
+	}
+	if a.dropProgressStalls == nil {
+		a.dropProgressStalls = make(map[string]dropProgressStallState)
+	}
+
+	state, ok := a.dropProgressStalls[key]
+	if !ok || state.streamer != streamer || dropProgressSnapshotAdvanced(state.progress, progress) || !dropProgressSnapshotEqual(state.progress, progress) {
+		a.dropProgressStalls[key] = dropProgressStallState{streamer: streamer, progress: progress}
+		return
+	}
+
+	state.unchangedPolls++
+	if state.unchangedPolls < dropProgressStallUnchangedPolls {
+		state.progress = progress
+		a.dropProgressStalls[key] = state
+		return
+	}
+
+	if a.logger != nil {
+		a.logger.Warn("drop progress stalled; rotating streamer",
+			slog.String("streamer", streamer),
+			slog.String("game", game),
+			slog.Int("unchanged_polls", state.unchangedPolls),
+		)
+	}
+	delete(a.dropProgressStalls, key)
+
+	if !a.removeDynamicStreamer(streamer) {
+		return
+	}
+
+	eng.SendEvent(engine.Event{
+		Type:    engine.EventUpdateStreamers,
+		Payload: a.getCombinedStreamers(),
+		Time:    time.Now().UTC(),
+	})
+}
+
+func dropProgressSnapshot(drops []inventory.Drop, gameName string) map[string]int {
+	progress := make(map[string]int)
+	for _, drop := range drops {
+		if !strings.EqualFold(drop.GameName, gameName) || drop.IsClaimed || !drop.IsEarnable {
+			continue
+		}
+		if drop.RequiredMinutes > 0 && drop.CurrentMinutes >= drop.RequiredMinutes {
+			continue
+		}
+
+		key := drop.ID
+		if key == "" {
+			key = drop.CampaignID + "\x00" + drop.Name
+		}
+		progress[key] = drop.CurrentMinutes
+	}
+	return progress
+}
+
+func dropProgressSnapshotAdvanced(previous, current map[string]int) bool {
+	for key, currentMinutes := range current {
+		if currentMinutes > previous[key] {
+			return true
+		}
+	}
+	return false
+}
+
+func dropProgressSnapshotEqual(previous, current map[string]int) bool {
+	if len(previous) != len(current) {
+		return false
+	}
+	for key, currentMinutes := range current {
+		if previous[key] != currentMinutes {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *App) setCurrentFarmingCampaign(campaignID string) bool {
@@ -891,42 +1049,24 @@ func (a *App) runMinuteWatched(ctx context.Context, eng *engine.Engine, gqlClien
 			timer.Stop()
 			return
 		case <-timer.C:
-			active := eng.ActiveStreamers()
-			for _, login := range active {
-				s := a.findCombinedStreamer(login)
-				if s == nil || !a.isActiveDropGame(s.GameName) {
-					continue
-				}
-				if err := watcher.SendMinuteWatched(ctx, *s, a.userID); err != nil {
-					a.logger.Warn("minute watched failed",
-						slog.String("streamer", login),
-						slog.String("error", err.Error()),
-					)
-					continue
-				} else {
-					a.logger.Debug("minute watched sent",
-						slog.String("streamer", login),
-						slog.String("game", s.GameName),
-					)
-				}
-				break
+			s := a.activeDropStreamer(eng)
+			if s == nil {
+				continue
+			}
+			if err := watcher.SendMinuteWatched(ctx, *s, a.userID); err != nil {
+				a.logger.Warn("minute watched failed",
+					slog.String("streamer", s.Login),
+					slog.String("error", err.Error()),
+				)
+				continue
+			} else {
+				a.logger.Debug("minute watched sent",
+					slog.String("streamer", s.Login),
+					slog.String("game", s.GameName),
+				)
 			}
 		}
 	}
-}
-
-func (a *App) isActiveDropGame(gameName string) bool {
-	if gameName == "" {
-		return false
-	}
-	a.activeGamesMu.RLock()
-	defer a.activeGamesMu.RUnlock()
-	for _, activeGame := range a.activeGames {
-		if strings.EqualFold(gameName, activeGame) {
-			return true
-		}
-	}
-	return false
 }
 
 func (a *App) pollChannelPoints(ctx context.Context, eng *engine.Engine, loader channelpoints.ContextLoader) {

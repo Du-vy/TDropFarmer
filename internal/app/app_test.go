@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Du-vy/TDropFarmer/internal/config"
 	"github.com/Du-vy/TDropFarmer/internal/domain"
@@ -653,4 +654,89 @@ func TestTopGamesReturnsCopyWithLimit(t *testing.T) {
 	if games[0] != "Fortnite" {
 		t.Fatalf("topGames should return a copy, original changed to %v", games)
 	}
+}
+
+func TestActiveDropStreamerPrefersDynamicCandidate(t *testing.T) {
+	app, eng := newActiveDropStreamerTestApp(t)
+
+	streamer := app.activeDropStreamer(eng)
+	if streamer == nil {
+		t.Fatal("expected active drop streamer")
+	}
+	if streamer.Login != "dynamic" {
+		t.Fatalf("expected dynamic streamer, got %q", streamer.Login)
+	}
+}
+
+func TestRotateStalledDropStreamerRemovesDynamicCandidate(t *testing.T) {
+	app, eng := newActiveDropStreamerTestApp(t)
+	drops := []inventory.Drop{
+		{
+			ID:              "drop-1",
+			GameName:        "Delta Force",
+			RequiredMinutes: 240,
+			CurrentMinutes:  197,
+			IsEarnable:      true,
+		},
+	}
+
+	app.rotateStalledDropStreamerIfNeeded(eng, drops)
+	app.rotateStalledDropStreamerIfNeeded(eng, drops)
+	if len(app.dynamicStreamers) != 1 {
+		t.Fatalf("dynamic streamer removed too early: %v", app.dynamicStreamers)
+	}
+
+	app.rotateStalledDropStreamerIfNeeded(eng, drops)
+	if len(app.dynamicStreamers) != 0 {
+		t.Fatalf("expected stalled dynamic streamer to be removed, got %v", app.dynamicStreamers)
+	}
+}
+
+func newActiveDropStreamerTestApp(t *testing.T) (*App, *engine.Engine) {
+	t.Helper()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Config{
+		Watch: config.WatchConfig{TickSeconds: 60},
+		Features: config.FeatureConfig{
+			ClaimDrops: config.Bool(true),
+		},
+		Streamers: []config.StreamerConfig{{Login: "static"}},
+	}
+	app := &App{
+		config: cfg,
+		logger: logger,
+		staticStreamers: []domain.Streamer{
+			{ID: "1", Login: "static", DisplayName: "Static", GameName: "Delta Force"},
+		},
+		dynamicStreamers: []domain.Streamer{
+			{ID: "2", Login: "dynamic", DisplayName: "Dynamic", GameName: "Delta Force", BroadcastID: "stream-2"},
+		},
+		activeGames: []string{"Delta Force"},
+	}
+	eng := engine.New(cfg, app.getCombinedStreamers(), logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = eng.Run(ctx) }()
+
+	eng.SendEvent(engine.Event{Type: engine.EventActiveGames, Payload: []string{"Delta Force"}, Time: time.Now().UTC()})
+	eng.SendEvent(engine.Event{Type: engine.EventOnline, Streamer: "static", Time: time.Now().UTC()})
+	eng.SendEvent(engine.Event{Type: engine.EventOnline, Streamer: "dynamic", Time: time.Now().UTC()})
+	waitForActiveStreamers(t, eng, 2)
+
+	return app, eng
+}
+
+func waitForActiveStreamers(t *testing.T, eng *engine.Engine, count int) {
+	t.Helper()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if len(eng.ActiveStreamers()) == count {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("active streamers = %v, want count %d", eng.ActiveStreamers(), count)
 }
