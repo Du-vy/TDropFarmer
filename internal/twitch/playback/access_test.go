@@ -116,7 +116,6 @@ func TestWatcher_SendMinuteWatched(t *testing.T) {
 	fetcher := TokenFetcher{Client: tokenClient}
 
 	watcher := NewWatcher(fetcher)
-	watcher.spadeURL = server.URL + "/track"
 	err := watcher.SendMinuteWatched(context.Background(), domain.Streamer{
 		Login:       "test_channel",
 		ID:          "12345",

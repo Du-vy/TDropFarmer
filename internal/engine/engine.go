@@ -31,8 +31,6 @@ type Engine struct {
 	bonusClaimer  channelpoints.BonusClaimer
 	pointRecorder PointRecorder
 
-	cancelFunc context.CancelFunc
-
 	activeGames []string
 }
 
@@ -72,8 +70,6 @@ func New(cfg config.Config, resolved []domain.Streamer, logger *slog.Logger, opt
 			IsStatic:    staticLogins[strings.ToLower(streamer.Login)],
 		})
 	}
-	states = applyConfigOverrides(states, cfg.Streamers)
-
 	engine := &Engine{
 		config:      cfg,
 		streamers:   states,
@@ -88,29 +84,11 @@ func New(cfg config.Config, resolved []domain.Streamer, logger *slog.Logger, opt
 	return engine
 }
 
-func applyConfigOverrides(states []StreamerState, cfgStreamers []config.StreamerConfig) []StreamerState {
-	lookup := make(map[string]config.StreamerConfig, len(cfgStreamers))
-	for _, cfg := range cfgStreamers {
-		lookup[cfg.Login] = cfg
-	}
-	for i, state := range states {
-		if cfg, ok := lookup[state.Login]; ok {
-			if cfg.ClaimDrops != nil {
-				_ = *cfg.ClaimDrops
-			}
-		}
-		states[i] = state
-	}
-	return states
-}
-
 func (e *Engine) Events() <-chan Event {
 	return e.eventsOut
 }
 
 func (e *Engine) Run(ctx context.Context) error {
-	ctx, cancel := context.WithCancel(ctx)
-	e.cancelFunc = cancel
 	defer close(e.eventsOut)
 
 	e.logger.Info("engine started",
@@ -321,8 +299,6 @@ func (e *Engine) handleUpdateStreamers(resolved []domain.Streamer) {
 		}
 	}
 
-	states = applyConfigOverrides(states, e.config.Streamers)
-
 	e.streamers = states
 	e.logger.Info("engine candidate streamers updated", slog.Int("count", len(e.streamers)))
 	e.reschedule()
@@ -490,6 +466,10 @@ func (e *Engine) emit(event Event) {
 	select {
 	case e.eventsOut <- event:
 	default:
+		e.logger.Warn("engine output channel full; dropping event",
+			slog.String("type", string(event.Type)),
+			slog.String("streamer", event.Streamer),
+		)
 	}
 }
 
@@ -499,15 +479,6 @@ func (e *Engine) SendEvent(event Event) {
 	default:
 		e.logger.Warn("engine event channel full", slog.String("type", string(event.Type)))
 	}
-}
-
-func (e *Engine) PointsForStreamer(login string) int64 {
-	for _, state := range e.streamers {
-		if state.Login == login {
-			return state.Points
-		}
-	}
-	return 0
 }
 
 func (e *Engine) ActiveStreamers() []string {

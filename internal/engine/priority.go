@@ -150,12 +150,6 @@ func diffSnapshots(previous, current []StreamerState) (added, removed []Streamer
 	return added, removed
 }
 
-func stateSliceIndex(states []StreamerState, login string) int {
-	return slices.IndexFunc(states, func(s StreamerState) bool {
-		return s.Login == login
-	})
-}
-
 func stateSliceHas(states []StreamerState, login string) bool {
 	return slices.ContainsFunc(states, func(s StreamerState) bool {
 		return s.Login == login

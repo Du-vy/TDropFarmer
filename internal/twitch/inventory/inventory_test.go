@@ -572,3 +572,80 @@ func TestGetActiveCampaignGamesSkipsIgnoredGames(t *testing.T) {
 		t.Fatalf("expected Overwatch, got %v", games[0])
 	}
 }
+
+type failingDetailsGQLClient struct {
+	campaignGamesGQLClient
+	failIDs map[string]bool
+}
+
+func (c failingDetailsGQLClient) Do(ctx context.Context, req gql.Request) (gql.Response, error) {
+	if req.OperationName == campaignDetailsOperation {
+		if id, _ := req.Variables["dropID"].(string); c.failIDs[id] {
+			return gql.Response{}, fmt.Errorf("details request failed for %s", id)
+		}
+	}
+	return c.campaignGamesGQLClient.Do(ctx, req)
+}
+
+func TestGetActiveCampaignGamesSkipsCampaignWithFailedDetails(t *testing.T) {
+	dashboard := []byte(`{
+		"currentUser": {
+			"dropCampaigns": [
+				{"id": "flaky", "status": "ACTIVE", "game": {"displayName": "Flaky Game"}},
+				{"id": "overwatch", "status": "ACTIVE", "game": {"displayName": "Overwatch"}}
+			]
+		}
+	}`)
+	earnableOverwatch := []byte(`{
+		"user": {"dropCampaign": {
+			"id": "overwatch",
+			"status": "ACTIVE",
+			"self": {"isAccountConnected": true},
+			"game": {"displayName": "Overwatch"},
+			"timeBasedDrops": [
+				{"requiredMinutesWatched": 60, "self": {"hasPreconditionsMet": true, "isClaimed": false}}
+			]
+		}}
+	}`)
+
+	client := failingDetailsGQLClient{
+		campaignGamesGQLClient: campaignGamesGQLClient{
+			dashboard: dashboard,
+			details: map[string][]byte{
+				"overwatch": earnableOverwatch,
+			},
+		},
+		failIDs: map[string]bool{"flaky": true},
+	}
+	games, unconnected, _, err := Client{Client: client, UserID: "805921782"}.GetActiveCampaignGames(context.Background())
+	if err != nil {
+		t.Fatalf("GetActiveCampaignGames returned error: %v", err)
+	}
+
+	if len(games) != 1 || games[0] != "Overwatch" {
+		t.Fatalf("expected [Overwatch], got %v", games)
+	}
+	if len(unconnected) != 0 {
+		t.Fatalf("expected 0 unconnected games, got %v", unconnected)
+	}
+}
+
+func TestGetActiveCampaignGamesStopsOnContextCancel(t *testing.T) {
+	dashboard := []byte(`{
+		"currentUser": {
+			"dropCampaigns": [
+				{"id": "one", "status": "ACTIVE", "game": {"displayName": "Game One"}},
+				{"id": "two", "status": "ACTIVE", "game": {"displayName": "Game Two"}}
+			]
+		}
+	}`)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	client := campaignGamesGQLClient{dashboard: dashboard}
+	_, _, _, err := Client{Client: client, UserID: "805921782"}.GetActiveCampaignGames(ctx)
+	if err == nil {
+		t.Fatalf("GetActiveCampaignGames returned nil error, want context error")
+	}
+}

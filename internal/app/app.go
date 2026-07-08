@@ -124,6 +124,10 @@ func (a *App) Run(ctx context.Context) error {
 	)
 	a.userID = validation.UserID
 
+	// TODO: the access token is captured once here and shared by every client
+	// for the lifetime of the process. If it expires or is revoked mid-run,
+	// all API calls fail until restart. A shared refreshing token source would
+	// fix this but requires re-plumbing the twitch/gql/chat clients.
 	helixClient := twitch.Client{
 		ClientID:    a.config.Auth.ClientID,
 		AccessToken: token.AccessToken,
@@ -242,10 +246,12 @@ func (a *App) Run(ctx context.Context) error {
 	var notifier *notify.DiscordNotifier
 	if a.config.Notifications.Discord.Enabled {
 		notifier = notify.NewDiscord(a.config.Notifications.Discord.WebhookURL)
-		a.logger.Info("discord notifier configured", slog.String("webhook_url", a.config.Notifications.Discord.WebhookURL))
+		a.logger.Info("discord notifier configured")
 	}
 
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		for event := range eng.Events() {
 			a.logger.Debug("engine output event",
 				slog.String("type", string(event.Type)),
@@ -955,18 +961,12 @@ func (a *App) pollOnlineStatus(ctx context.Context, eng *engine.Engine, client *
 				userIDs = append(userIDs, s.ID)
 			}
 
-			var streams []twitch.StreamInfo
-			for start := 0; start < len(userIDs); start += 100 {
-				end := start + 100
-				if end > len(userIDs) {
-					end = len(userIDs)
-				}
-				batch, err := client.GetStreams(ctx, userIDs[start:end])
-				if err != nil {
-					a.logger.Warn("check streams batch failed", slog.String("error", err.Error()))
-					break
-				}
-				streams = append(streams, batch...)
+			streams, err := client.GetAllStreams(ctx, userIDs)
+			if err != nil {
+				// Keep the previous online state rather than treating a failed
+				// poll as everyone going offline.
+				a.logger.Warn("check streams failed; keeping previous online status", slog.String("error", err.Error()))
+				continue
 			}
 
 			currentOnline := make(map[string]twitch.StreamInfo)

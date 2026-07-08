@@ -2,7 +2,6 @@ package twitch
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/url"
 )
@@ -80,7 +79,19 @@ func (c Client) GetStreamsByLogin(ctx context.Context, logins []string) ([]Strea
 	return response.Data, nil
 }
 
-func streamInfoToJSON(info StreamInfo) []byte {
-	data, _ := json.Marshal(info)
-	return data
+// GetAllStreams fetches stream info for any number of user IDs, batching
+// requests to the Helix 100-ID limit. Any batch failure fails the whole call
+// so callers never mistake a partial result for the remaining streamers being
+// offline.
+func (c Client) GetAllStreams(ctx context.Context, userIDs []string) ([]StreamInfo, error) {
+	var streams []StreamInfo
+	for start := 0; start < len(userIDs); start += 100 {
+		end := min(start+100, len(userIDs))
+		batch, err := c.GetStreams(ctx, userIDs[start:end])
+		if err != nil {
+			return nil, err
+		}
+		streams = append(streams, batch...)
+	}
+	return streams, nil
 }

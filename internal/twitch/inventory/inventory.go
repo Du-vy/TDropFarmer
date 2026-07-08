@@ -27,6 +27,10 @@ const (
 
 	// Leave room for discovery, scheduling, and watch telemetry delays.
 	dropCompletionSafetyBuffer = 10 * time.Minute
+
+	// Pause between per-campaign detail requests so a long campaign list does
+	// not burst dozens of GQL calls at once.
+	campaignDetailsRequestDelay = 250 * time.Millisecond
 )
 
 type GQLClient interface {
@@ -398,6 +402,7 @@ func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, []string,
 	var unconnectedGames []string
 	var allCampaignDrops []Drop
 
+	firstDetail := true
 	for _, campaign := range data.CurrentUser.DropCampaigns {
 		if campaign.Status != "ACTIVE" {
 			continue
@@ -406,9 +411,30 @@ func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, []string,
 			continue
 		}
 
+		if !firstDetail {
+			select {
+			case <-ctx.Done():
+				return nil, nil, nil, ctx.Err()
+			case <-time.After(campaignDetailsRequestDelay):
+			}
+		}
+		firstDetail = false
+
 		detail, err := c.getCampaignDetails(ctx, campaign.ID)
 		if err != nil {
-			return nil, nil, nil, err
+			if ctx.Err() != nil {
+				return nil, nil, nil, ctx.Err()
+			}
+			// One flaky campaign must not abort the whole scan; skip it and
+			// keep collecting the rest.
+			if c.Logger != nil {
+				c.Logger.Warn("fetch campaign details failed; skipping campaign",
+					slog.String("campaign_id", campaign.ID),
+					slog.String("game", campaign.Game.DisplayName),
+					slog.String("error", err.Error()),
+				)
+			}
+			continue
 		}
 		earnable, isConnected := campaignDetailEarnable(time.Now().UTC(), detail, claimedBenefits)
 		if c.Logger != nil {

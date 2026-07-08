@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
 
@@ -95,21 +94,15 @@ func (t AccessToken) UsherURL(login string) string {
 }
 
 type Watcher struct {
-	fetcher  TokenFetcher
-	client   *http.Client
-	spadeURL string
+	fetcher TokenFetcher
+	client  *http.Client
 }
 
 func NewWatcher(fetcher TokenFetcher) *Watcher {
 	return &Watcher{
-		fetcher:  fetcher,
-		client:   &http.Client{Timeout: 20 * time.Second},
-		spadeURL: "https://spade.twitch.tv/track",
+		fetcher: fetcher,
+		client:  &http.Client{Timeout: 20 * time.Second},
 	}
-}
-
-func (w *Watcher) SetSpadeURL(spadeURL string) {
-	w.spadeURL = spadeURL
 }
 
 func (w *Watcher) SendMinuteWatched(ctx context.Context, streamer domain.Streamer, userID string) error {
@@ -265,47 +258,6 @@ func (w *Watcher) httpHead(ctx context.Context, target string) error {
 	return nil
 }
 
-func (w *Watcher) httpPostForm(ctx context.Context, target string, data []byte) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(string(data)))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", userAgent())
-	resp, err := w.client.Do(req)
-	if err != nil {
-		return err
-	}
-	resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("http status %d", resp.StatusCode)
-	}
-	return nil
-}
-
-func encodeSpadePayload(streamer domain.Streamer, userID string) []byte {
-	payload := []map[string]any{
-		{
-			"event": "minute-watched",
-			"properties": map[string]any{
-				"broadcast_id": streamer.BroadcastID,
-				"channel_id":   streamer.ID,
-				"channel":      streamer.Login,
-				"hidden":       false,
-				"live":         true,
-				"location":     "channel",
-				"logged_in":    true,
-				"muted":        false,
-				"player":       "site",
-				"user_id":      userID,
-			},
-		},
-	}
-	raw, _ := json.Marshal(payload)
-	encoded := base64.StdEncoding.EncodeToString(raw)
-	return []byte(fmt.Sprintf("data=%s", encoded))
-}
-
 func encodeGQLWatchPayload(streamer domain.Streamer, userID string) (string, error) {
 	payload := []map[string]any{
 		{
@@ -360,63 +312,4 @@ func nonEmptyLines(text string) []string {
 
 func userAgent() string {
 	return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-}
-
-// DiscoverSpadeURL fetches the main Twitch page to find and parse the configuration settings JS file,
-// extracting the active telemetry spade/beacon URL.
-// If discovery fails, it returns the default fallback URL.
-func DiscoverSpadeURL(ctx context.Context) string {
-	const defaultSpadeURL = "https://spade.twitch.tv/track"
-	client := &http.Client{Timeout: 10 * time.Second}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.twitch.tv/", nil)
-	if err != nil {
-		return defaultSpadeURL
-	}
-	req.Header.Set("User-Agent", userAgent())
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return defaultSpadeURL
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return defaultSpadeURL
-	}
-
-	// 1. Find settings JS file in Twitch main page HTML
-	reSettings := regexp.MustCompile(`(https://static\.twitchcdn\.net/config/settings.*?\.js|https://assets\.twitch\.tv/config/settings.*?\.js)`)
-	matches := reSettings.FindStringSubmatch(string(body))
-	if len(matches) < 2 {
-		return defaultSpadeURL
-	}
-
-	settingsURL := matches[1]
-	reqSettings, err := http.NewRequestWithContext(ctx, http.MethodGet, settingsURL, nil)
-	if err != nil {
-		return defaultSpadeURL
-	}
-	reqSettings.Header.Set("User-Agent", userAgent())
-
-	respSettings, err := client.Do(reqSettings)
-	if err != nil {
-		return defaultSpadeURL
-	}
-	defer respSettings.Body.Close()
-
-	bodySettings, err := io.ReadAll(io.LimitReader(respSettings.Body, 1<<20))
-	if err != nil {
-		return defaultSpadeURL
-	}
-
-	// 2. Extract spade_url or beacon_url from the settings JS
-	reSpade := regexp.MustCompile(`"(?:beacon|spade)_url"\s*:\s*"([^"]+)"`)
-	spadeMatches := reSpade.FindStringSubmatch(string(bodySettings))
-	if len(spadeMatches) < 2 {
-		return defaultSpadeURL
-	}
-
-	return spadeMatches[1]
 }

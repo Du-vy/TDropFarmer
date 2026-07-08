@@ -45,7 +45,8 @@ func (c *Client) Run(ctx context.Context) error {
 	var conn net.Conn
 	var err error
 	if strings.Contains(addr, "irc.chat.twitch.tv") || strings.HasSuffix(addr, ":6697") {
-		conn, err = tls.DialWithDialer(dialer, "tcp", addr, nil)
+		tlsDialer := &tls.Dialer{NetDialer: dialer}
+		conn, err = tlsDialer.DialContext(ctx, "tcp", addr)
 	} else {
 		conn, err = dialer.DialContext(ctx, "tcp", addr)
 	}
