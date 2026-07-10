@@ -578,6 +578,36 @@ type failingDetailsGQLClient struct {
 	failIDs map[string]bool
 }
 
+func TestGetInventoryDoesNotTreatSubscriptionDropAsWatchEarnable(t *testing.T) {
+	mockResponse := `{"currentUser":{"inventory":{"dropCampaignsInProgress":[
+		{
+			"id":"subscription-campaign",
+			"name":"Jubilee Badge",
+			"status":"ACTIVE",
+			"game":{"name":"Marvel Rivals"},
+			"timeBasedDrops":[{
+				"id":"subscription-drop",
+				"name":"Jubilee Badge",
+				"requiredMinutesWatched":0,
+				"requiredSubs":1,
+				"self":{"currentMinutesWatched":0,"hasPreconditionsMet":true,"dropInstanceID":null,"isClaimed":false}
+			}]
+		}
+	]}}}`
+
+	client := &recordingGQLClient{response: gql.Response{Data: json.RawMessage(mockResponse)}}
+	drops, err := Client{Client: client}.GetInventory(context.Background())
+	if err != nil {
+		t.Fatalf("GetInventory returned error: %v", err)
+	}
+	if len(drops) != 1 {
+		t.Fatalf("expected one subscription drop, got %d", len(drops))
+	}
+	if drops[0].IsEarnable {
+		t.Fatalf("subscription drop marked watch-earnable: %+v", drops[0])
+	}
+}
+
 func (c failingDetailsGQLClient) Do(ctx context.Context, req gql.Request) (gql.Response, error) {
 	if req.OperationName == campaignDetailsOperation {
 		if id, _ := req.Variables["dropID"].(string); c.failIDs[id] {

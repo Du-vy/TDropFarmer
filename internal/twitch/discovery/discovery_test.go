@@ -155,3 +155,48 @@ func TestGetLiveStreamsUsesRedirectedSlug(t *testing.T) {
 		t.Errorf("got %v, want %v", streamers, expected)
 	}
 }
+
+func TestGetLiveStreamsForCampaignsSkipsChannelsWithDifferentDrops(t *testing.T) {
+	redirectResponse := `{"game":{"slug":"marvel-rivals"}}`
+	directoryResponse := `{
+		"game": {
+			"streams": {
+				"edges": [
+					{"node":{"id":"stream-1","broadcaster":{"id":"1","login":"sub_only","displayName":"Sub Only"},"game":{"id":"1264310518","name":"Marvel Rivals"}}},
+					{"node":{"id":"stream-2","broadcaster":{"id":"2","login":"season_nine","displayName":"Season Nine"},"game":{"id":"1264310518","name":"Marvel Rivals"}}},
+					{"node":{"id":"stream-3","broadcaster":{"id":"3","login":"both","displayName":"Both"},"game":{"id":"1264310518","name":"Marvel Rivals"}}}
+				]
+			}
+		}
+	}`
+	availableByChannel := map[string]string{
+		"1": `{"channel":{"viewerDropCampaigns":[{"id":"jubilee"}]}}`,
+		"2": `{"channel":{"viewerDropCampaigns":[{"id":"season-9"}]}}`,
+		"3": `{"channel":{"viewerDropCampaigns":[{"id":"jubilee"},{"id":"season-9"}]}}`,
+	}
+
+	client := Client{Client: mockGQLClient{doFunc: func(ctx context.Context, req gql.Request) (gql.Response, error) {
+		switch req.OperationName {
+		case gameRedirectOperation:
+			return gql.Response{Data: json.RawMessage(redirectResponse)}, nil
+		case gameDirectoryOperation:
+			if got := req.Variables["limit"]; got != campaignDiscoveryLimit {
+				t.Fatalf("directory limit = %v, want %d", got, campaignDiscoveryLimit)
+			}
+			return gql.Response{Data: json.RawMessage(directoryResponse)}, nil
+		case availableDropsOperation:
+			channelID, _ := req.Variables["channelID"].(string)
+			return gql.Response{Data: json.RawMessage(availableByChannel[channelID])}, nil
+		default:
+			return gql.Response{}, fmt.Errorf("unexpected operation %q", req.OperationName)
+		}
+	}}}
+
+	streamers, err := client.GetLiveStreamsForCampaigns(context.Background(), "Marvel Rivals", []string{"season-9"}, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(streamers) != 2 || streamers[0].Login != "season_nine" || streamers[1].Login != "both" {
+		t.Fatalf("expected only Season 9 channels, got %+v", streamers)
+	}
+}

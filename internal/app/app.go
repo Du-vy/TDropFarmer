@@ -60,7 +60,7 @@ type dropProgressStallState struct {
 }
 
 type gameStreamDiscoverer interface {
-	GetLiveStreams(ctx context.Context, gameName string, limit int) ([]domain.Streamer, error)
+	GetLiveStreamsForCampaigns(ctx context.Context, gameName string, campaignIDs []string, limit int) ([]domain.Streamer, error)
 }
 
 func randomDuration(min, max time.Duration) time.Duration {
@@ -561,6 +561,26 @@ func (a *App) activeGamesSnapshot() []string {
 	return snapshot
 }
 
+func (a *App) activeCampaignIDsForGame(gameName string) []string {
+	a.dropsMu.RLock()
+	defer a.dropsMu.RUnlock()
+
+	seen := make(map[string]bool)
+	var campaignIDs []string
+	collect := func(drops []inventory.Drop) {
+		for _, drop := range drops {
+			if !strings.EqualFold(drop.GameName, gameName) || drop.CampaignID == "" || drop.IsClaimed || !drop.IsEarnable || drop.RequiredMinutes <= 0 || seen[drop.CampaignID] {
+				continue
+			}
+			seen[drop.CampaignID] = true
+			campaignIDs = append(campaignIDs, drop.CampaignID)
+		}
+	}
+	collect(a.lastDrops)
+	collect(a.lastActiveCampaignDrops)
+	return campaignIDs
+}
+
 func activeGamesSignature(games []string) string {
 	keys := make([]string, 0, len(games))
 	for _, game := range games {
@@ -1022,7 +1042,8 @@ func (a *App) discoverGamesStreamers(ctx context.Context, client gameStreamDisco
 		}
 
 		a.logger.Debug("discovering live streams for game", slog.String("game", game))
-		streamers, err := client.GetLiveStreams(ctx, game, 3)
+		campaignIDs := a.activeCampaignIDsForGame(game)
+		streamers, err := client.GetLiveStreamsForCampaigns(ctx, game, campaignIDs, 3)
 		if err != nil {
 			a.logger.Warn("discover game streams failed", slog.String("game", game), slog.String("error", err.Error()))
 			continue
@@ -1495,6 +1516,8 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 			hasAnyDrops[key] = true
 			if !drop.IsClaimed {
 				hasUnclaimed[key] = true
+			}
+			if !drop.IsClaimed && drop.IsEarnable {
 				inProgressMap[key] = true
 			}
 		}
@@ -1519,6 +1542,7 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 	var priorityUnconnectedAvailable []string
 	var otherConnectedAvailable []string
 	var otherUnconnectedAvailable []string
+	availableGames := make(map[string]bool)
 
 	if a.config.Watch.AutoStartCampaigns {
 		availableConnected, availableUnconnected, allDrops, err := invClient.GetActiveCampaignGames(ctx)
@@ -1528,6 +1552,11 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 			a.dropsMu.Lock()
 			a.lastActiveCampaignDrops = allDrops
 			a.dropsMu.Unlock()
+			for _, drop := range allDrops {
+				if drop.GameName != "" && drop.IsEarnable && !drop.IsClaimed && drop.RequiredMinutes > 0 {
+					availableGames[gameKey(drop.GameName)] = true
+				}
+			}
 			seenConnected := make(map[string]bool)
 			for _, game := range availableConnected {
 				if game == "" || inProgressMap[gameKey(game)] {
@@ -1589,7 +1618,7 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 		}
 		for _, pg := range a.config.Watch.PriorityGames {
 			pgKey := gameKey(pg)
-			if hasAnyDrops[pgKey] && !hasUnclaimed[pgKey] {
+			if hasAnyDrops[pgKey] && !hasUnclaimed[pgKey] && !availableGames[pgKey] {
 				continue
 			}
 
@@ -1609,7 +1638,7 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 	filtered := sortedGames[:0]
 	for _, game := range sortedGames {
 		key := gameKey(game)
-		if hasAnyDrops[key] && !hasUnclaimed[key] {
+		if hasAnyDrops[key] && !hasUnclaimed[key] && !availableGames[key] {
 			if a.logger != nil {
 				a.logger.Debug("excluding game with all drops claimed",
 					slog.String("game", game),

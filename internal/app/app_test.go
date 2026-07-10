@@ -445,12 +445,63 @@ func TestSortActiveGamesPriorityCampaignPreemptsCurrentNonPriorityCampaign(t *te
 }
 
 type fakeGameDiscoverer struct {
-	calls     []string
-	streamers map[string][]domain.Streamer
+	calls             []string
+	campaignIDsByGame map[string][]string
+	streamers         map[string][]domain.Streamer
 }
 
-func (f *fakeGameDiscoverer) GetLiveStreams(ctx context.Context, gameName string, limit int) ([]domain.Streamer, error) {
+func TestSortActiveGamesKeepsNewCampaignForCompletedSameGame(t *testing.T) {
+	app := &App{config: config.Config{
+		Watch: config.WatchConfig{
+			PriorityGames:        []string{"Marvel Rivals"},
+			FallbackAllCampaigns: true,
+			AutoStartCampaigns:   true,
+		},
+		Features: config.FeatureConfig{ClaimDrops: config.Bool(true)},
+	}}
+	client := mockInventoryGQLClient{
+		dashboardResponse: []byte(`{"currentUser":{"dropCampaigns":[{"id":"season-9","status":"ACTIVE","game":{"displayName":"Marvel Rivals"}}]}}`),
+		detailResponses: map[string][]byte{
+			"season-9": []byte(`{"user":{"dropCampaign":{"id":"season-9","name":"Season 9 Twitch Drops","status":"ACTIVE","self":{"isAccountConnected":true},"game":{"displayName":"Marvel Rivals"},"timeBasedDrops":[{"id":"reward","requiredMinutesWatched":30,"requiredSubs":0,"self":{"hasPreconditionsMet":true,"isClaimed":false}}]}}}`),
+		},
+	}
+	drops := []inventory.Drop{{GameName: "Marvel Rivals", CampaignID: "season-8", IsClaimed: true}}
+
+	got := app.sortActiveGames(context.Background(), inventory.Client{Client: client, UserID: "viewer"}, drops, "")
+	if len(got) != 1 || got[0] != "Marvel Rivals" {
+		t.Fatalf("expected active same-game campaign to survive completed inventory campaign, got %v", got)
+	}
+}
+
+func TestSortActiveGamesDoesNotLetUnearnableSameGameCampaignBlockNewCampaign(t *testing.T) {
+	app := &App{config: config.Config{
+		Watch: config.WatchConfig{
+			PriorityGames:        []string{"Marvel Rivals"},
+			FallbackAllCampaigns: true,
+			AutoStartCampaigns:   true,
+		},
+		Features: config.FeatureConfig{ClaimDrops: config.Bool(true)},
+	}}
+	client := mockInventoryGQLClient{
+		dashboardResponse: []byte(`{"currentUser":{"dropCampaigns":[{"id":"season-9","status":"ACTIVE","game":{"displayName":"Marvel Rivals"}}]}}`),
+		detailResponses: map[string][]byte{
+			"season-9": []byte(`{"user":{"dropCampaign":{"id":"season-9","name":"Season 9 Twitch Drops","status":"ACTIVE","self":{"isAccountConnected":true},"game":{"displayName":"Marvel Rivals"},"timeBasedDrops":[{"id":"reward","requiredMinutesWatched":30,"requiredSubs":0,"self":{"hasPreconditionsMet":true,"isClaimed":false}}]}}}`),
+		},
+	}
+	drops := []inventory.Drop{{GameName: "Marvel Rivals", CampaignID: "jubilee", IsClaimed: false, IsEarnable: false}}
+
+	got := app.sortActiveGames(context.Background(), inventory.Client{Client: client, UserID: "viewer"}, drops, "")
+	if len(got) != 1 || got[0] != "Marvel Rivals" {
+		t.Fatalf("expected new watch campaign despite unearnable same-game campaign, got %v", got)
+	}
+}
+
+func (f *fakeGameDiscoverer) GetLiveStreamsForCampaigns(ctx context.Context, gameName string, campaignIDs []string, limit int) ([]domain.Streamer, error) {
 	f.calls = append(f.calls, gameName)
+	if f.campaignIDsByGame == nil {
+		f.campaignIDsByGame = make(map[string][]string)
+	}
+	f.campaignIDsByGame[gameName] = append([]string(nil), campaignIDs...)
 	return f.streamers[gameName], nil
 }
 
@@ -502,6 +553,35 @@ func TestDiscoverGamesStreamersStopsAtFirstGameWithStreams(t *testing.T) {
 		if streamer.GameName != "Target Game" {
 			t.Fatalf("expected only target game streamers, got %v", streamers)
 		}
+	}
+}
+
+func TestDiscoverGamesStreamersPassesWatchCampaignIDs(t *testing.T) {
+	app := &App{
+		config: config.Config{
+			Watch:    config.WatchConfig{FallbackAllCampaigns: true},
+			Features: config.FeatureConfig{ClaimDrops: config.Bool(true)},
+		},
+		activeGames: []string{"Marvel Rivals"},
+		lastDrops: []inventory.Drop{
+			{GameName: "Marvel Rivals", CampaignID: "jubilee", RequiredMinutes: 0, IsEarnable: false},
+		},
+		lastActiveCampaignDrops: []inventory.Drop{
+			{GameName: "Marvel Rivals", CampaignID: "season-9", RequiredMinutes: 30, IsEarnable: true},
+		},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	discoverer := &fakeGameDiscoverer{streamers: map[string][]domain.Streamer{
+		"Marvel Rivals": {{ID: "1", Login: "season_nine", GameName: "Marvel Rivals"}},
+	}}
+
+	_, err := app.discoverGamesStreamers(context.Background(), discoverer, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := discoverer.campaignIDsByGame["Marvel Rivals"]
+	if len(got) != 1 || got[0] != "season-9" {
+		t.Fatalf("expected only watch campaign ID, got %v", got)
 	}
 }
 

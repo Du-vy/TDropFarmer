@@ -116,7 +116,7 @@ func (c Client) GetInventory(ctx context.Context) ([]Drop, error) {
 
 			isClaimable := !td.Self.IsClaimed && dropInstanceID != ""
 			preconditionsMet := td.Self.HasPreconditionsMet != nil && *td.Self.HasPreconditionsMet
-			isEarnable := !td.Self.IsClaimed && preconditionsMet && campaignDropActive(now, campaign.Status, campaign.StartAt, campaign.EndAt, td.StartAt, td.EndAt)
+			isEarnable := !td.Self.IsClaimed && td.RequiredMinutesWatched > 0 && td.RequiredSubs == 0 && preconditionsMet && campaignDropActive(now, campaign.Status, campaign.StartAt, campaign.EndAt, td.StartAt, td.EndAt)
 
 			var imageURL string
 			if len(td.BenefitEdges) > 0 {
@@ -250,6 +250,7 @@ type inventoryResponse struct {
 					StartAt                string `json:"startAt"`
 					EndAt                  string `json:"endAt"`
 					RequiredMinutesWatched int    `json:"requiredMinutesWatched"`
+					RequiredSubs           int    `json:"requiredSubs"`
 					BenefitEdges           []struct {
 						Benefit struct {
 							ID            string `json:"id"`
@@ -305,6 +306,7 @@ type campaignDetailsResponse struct {
 				StartAt                string `json:"startAt"`
 				EndAt                  string `json:"endAt"`
 				RequiredMinutesWatched int    `json:"requiredMinutesWatched"`
+				RequiredSubs           int    `json:"requiredSubs"`
 				BenefitEdges           []struct {
 					Benefit struct {
 						Name          string `json:"name"`
@@ -478,6 +480,9 @@ func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, []string,
 			cCampaign := detail.User.DropCampaign
 			gameImageURL := cleanTwitchImageURL(campaign.Game.BoxArtURL)
 			for _, td := range cCampaign.TimeBasedDrops {
+				if td.RequiredMinutesWatched <= 0 || td.RequiredSubs > 0 {
+					continue
+				}
 				var imageURL string
 				if len(td.BenefitEdges) > 0 {
 					imageURL = td.BenefitEdges[0].Benefit.ImageAssetURL
@@ -587,7 +592,7 @@ func campaignDetailEarnable(now time.Time, data *campaignDetailsResponse, claime
 			}
 		}
 
-		if drop.RequiredMinutesWatched <= 0 || isClaimed {
+		if drop.RequiredMinutesWatched <= 0 || drop.RequiredSubs > 0 || isClaimed {
 			continue
 		}
 		preconditionsMet := true
