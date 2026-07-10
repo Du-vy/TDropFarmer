@@ -692,6 +692,149 @@ func TestRotateStalledDropStreamerRemovesDynamicCandidate(t *testing.T) {
 	}
 }
 
+func TestRotateStalledDropStreamerRotatesWhenGameMissingFromInventory(t *testing.T) {
+	app, eng := newActiveDropStreamerTestApp(t)
+	// No inventory entries for the watched game: the campaign never credited
+	// a single minute, so it never entered DropCampaignsInProgress.
+	drops := []inventory.Drop{
+		{
+			ID:              "drop-other",
+			GameName:        "Other Game",
+			RequiredMinutes: 240,
+			CurrentMinutes:  197,
+			IsEarnable:      true,
+		},
+	}
+
+	app.rotateStalledDropStreamerIfNeeded(eng, drops)
+	app.rotateStalledDropStreamerIfNeeded(eng, drops)
+	if len(app.dynamicStreamers) != 1 {
+		t.Fatalf("dynamic streamer removed too early: %v", app.dynamicStreamers)
+	}
+
+	app.rotateStalledDropStreamerIfNeeded(eng, drops)
+	if len(app.dynamicStreamers) != 0 {
+		t.Fatalf("expected non-crediting dynamic streamer to be removed, got %v", app.dynamicStreamers)
+	}
+	if !app.isStreamerOnRotationCooldown("dynamic") {
+		t.Fatal("expected rotated streamer to be on cooldown")
+	}
+}
+
+func TestDiscoverGamesStreamersSkipsStreamersOnRotationCooldown(t *testing.T) {
+	app := &App{
+		config: config.Config{
+			Watch: config.WatchConfig{
+				FallbackAllCampaigns: true,
+			},
+			Features: config.FeatureConfig{
+				ClaimDrops: config.Bool(true),
+			},
+		},
+		activeGames: []string{"Target Game", "Later Game"},
+		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	app.markStreamerRotationCooldown("target_one")
+	app.markStreamerRotationCooldown("target_two")
+
+	discoverer := &fakeGameDiscoverer{
+		streamers: map[string][]domain.Streamer{
+			"Target Game": {
+				{ID: "1", Login: "target_one", GameName: "Target Game"},
+				{ID: "2", Login: "target_two", GameName: "Target Game"},
+			},
+			"Later Game": {
+				{ID: "3", Login: "later_one", GameName: "Later Game"},
+			},
+		},
+	}
+
+	streamers, err := app.discoverGamesStreamers(context.Background(), discoverer, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(streamers) != 1 || streamers[0].Login != "later_one" {
+		t.Fatalf("expected discovery to skip cooled-down streamers and pick later_one, got %v", streamers)
+	}
+}
+
+func TestCheckWatchCreditWatchdogAlertsAndRecovers(t *testing.T) {
+	app, eng := newActiveDropStreamerTestApp(t)
+	drops := []inventory.Drop{
+		{
+			ID:              "drop-1",
+			GameName:        "Delta Force",
+			RequiredMinutes: 240,
+			CurrentMinutes:  100,
+			IsEarnable:      true,
+		},
+	}
+
+	// First poll establishes the baseline; no alert.
+	app.checkWatchCreditWatchdog(eng, drops)
+	if app.watchCreditAlerted {
+		t.Fatal("watchdog alerted on baseline poll")
+	}
+
+	// Frozen progress but still under the threshold: no alert yet.
+	app.checkWatchCreditWatchdog(eng, drops)
+	if app.watchCreditAlerted {
+		t.Fatal("watchdog alerted before threshold elapsed")
+	}
+
+	// Frozen progress past the threshold: alert.
+	app.watchCreditMu.Lock()
+	app.lastWatchCreditAt = time.Now().Add(-watchCreditStallThreshold - time.Minute)
+	app.watchCreditMu.Unlock()
+	app.checkWatchCreditWatchdog(eng, drops)
+	if !app.watchCreditAlerted {
+		t.Fatal("watchdog did not alert after threshold elapsed")
+	}
+
+	// Any credited minute clears the alert.
+	drops[0].CurrentMinutes = 101
+	app.checkWatchCreditWatchdog(eng, drops)
+	if app.watchCreditAlerted {
+		t.Fatal("watchdog alert not cleared after credit resumed")
+	}
+}
+
+func TestCheckWatchCreditWatchdogIgnoresIdlePeriods(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Config{
+		Watch:    config.WatchConfig{TickSeconds: 60},
+		Features: config.FeatureConfig{ClaimDrops: config.Bool(true)},
+	}
+	app := &App{config: cfg, logger: logger}
+	eng := engine.New(cfg, nil, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = eng.Run(ctx) }()
+
+	drops := []inventory.Drop{
+		{
+			ID:              "drop-1",
+			GameName:        "Delta Force",
+			RequiredMinutes: 240,
+			CurrentMinutes:  100,
+			IsEarnable:      true,
+		},
+	}
+
+	app.checkWatchCreditWatchdog(eng, drops)
+	app.watchCreditMu.Lock()
+	app.lastWatchCreditAt = time.Now().Add(-watchCreditStallThreshold - time.Minute)
+	app.watchCreditMu.Unlock()
+
+	// No active drop streamer: no credit is expected, so no alert.
+	app.checkWatchCreditWatchdog(eng, drops)
+	if app.watchCreditAlerted {
+		t.Fatal("watchdog alerted while nothing was being watched")
+	}
+}
+
 func newActiveDropStreamerTestApp(t *testing.T) (*App, *engine.Engine) {
 	t.Helper()
 

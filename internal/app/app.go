@@ -44,6 +44,13 @@ type App struct {
 	lastActiveCampaignDrops []inventory.Drop
 	currentFarmingCampaign  string
 	dropProgressStalls      map[string]dropProgressStallState
+	// rotatedStreamerCooldowns is guarded by streamersMu.
+	rotatedStreamerCooldowns map[string]time.Time
+	notifier                 *notify.DiscordNotifier
+	watchCreditMu            sync.Mutex
+	watchCreditProgress      map[string]int
+	lastWatchCreditAt        time.Time
+	watchCreditAlerted       bool
 }
 
 type dropProgressStallState struct {
@@ -67,6 +74,14 @@ func randomDuration(min, max time.Duration) time.Duration {
 const (
 	targetGameDiscoveryRefreshInterval = 30 * time.Minute
 	dropProgressStallUnchangedPolls    = 2
+
+	// Keep a stall-rotated streamer out of discovery long enough that the next
+	// discovery pass picks someone else instead of re-adding them minutes later.
+	stallRotationCooldown = 90 * time.Minute
+
+	// How long the account may go without a single credited watch minute, while
+	// actively watching a drop streamer, before the watchdog raises an alert.
+	watchCreditStallThreshold = time.Hour
 )
 
 func New(cfg config.Config, logger *slog.Logger, tokenStore auth.TokenStore) *App {
@@ -206,6 +221,15 @@ func (a *App) Run(ctx context.Context) error {
 		})
 	}
 
+	var notifier *notify.DiscordNotifier
+	if a.config.Notifications.Discord.Enabled {
+		notifier = notify.NewDiscord(a.config.Notifications.Discord.WebhookURL)
+		a.logger.Info("discord notifier configured")
+	}
+	// Set before the goroutines below start: the watch-credit watchdog inside
+	// pollDrops reads it.
+	a.notifier = notifier
+
 	var wg sync.WaitGroup
 
 	wg.Add(1)
@@ -241,12 +265,6 @@ func (a *App) Run(ctx context.Context) error {
 			defer wg.Done()
 			a.pollDrops(ctx, eng, inventoryClient)
 		}()
-	}
-
-	var notifier *notify.DiscordNotifier
-	if a.config.Notifications.Discord.Enabled {
-		notifier = notify.NewDiscord(a.config.Notifications.Discord.WebhookURL)
-		a.logger.Info("discord notifier configured")
 	}
 
 	wg.Add(1)
@@ -407,6 +425,8 @@ func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invCli
 		a.logger.Warn("fetch drops inventory failed", slog.String("error", err.Error()))
 		return
 	}
+
+	a.checkWatchCreditWatchdog(eng, drops)
 
 	activeGamesMap := make(map[string]bool)
 	for i := range drops {
@@ -674,18 +694,40 @@ func (a *App) removeDynamicStreamer(login string) bool {
 	return false
 }
 
+func (a *App) markStreamerRotationCooldown(login string) {
+	now := time.Now()
+	a.streamersMu.Lock()
+	defer a.streamersMu.Unlock()
+
+	if a.rotatedStreamerCooldowns == nil {
+		a.rotatedStreamerCooldowns = make(map[string]time.Time)
+	}
+	for key, until := range a.rotatedStreamerCooldowns {
+		if now.After(until) {
+			delete(a.rotatedStreamerCooldowns, key)
+		}
+	}
+	a.rotatedStreamerCooldowns[strings.ToLower(login)] = now.Add(stallRotationCooldown)
+}
+
+func (a *App) isStreamerOnRotationCooldown(login string) bool {
+	a.streamersMu.RLock()
+	defer a.streamersMu.RUnlock()
+	until, ok := a.rotatedStreamerCooldowns[strings.ToLower(login)]
+	return ok && time.Now().Before(until)
+}
+
 func (a *App) rotateStalledDropStreamerIfNeeded(eng *engine.Engine, drops []inventory.Drop) {
 	streamer, game := a.activeDynamicDropStreamer(eng)
 	if streamer == "" || game == "" {
 		return
 	}
 
+	// An empty snapshot is tracked like frozen progress: a watched game that
+	// never enters the inventory (no minute ever credited) must rotate too,
+	// otherwise restricted or non-crediting campaigns are farmed forever.
 	progress := dropProgressSnapshot(drops, game)
 	key := gameKey(game)
-	if len(progress) == 0 {
-		delete(a.dropProgressStalls, key)
-		return
-	}
 	if a.dropProgressStalls == nil {
 		a.dropProgressStalls = make(map[string]dropProgressStallState)
 	}
@@ -708,9 +750,12 @@ func (a *App) rotateStalledDropStreamerIfNeeded(eng *engine.Engine, drops []inve
 			slog.String("streamer", streamer),
 			slog.String("game", game),
 			slog.Int("unchanged_polls", state.unchangedPolls),
+			slog.Bool("game_missing_from_inventory", len(progress) == 0),
 		)
 	}
 	delete(a.dropProgressStalls, key)
+
+	a.markStreamerRotationCooldown(streamer)
 
 	if !a.removeDynamicStreamer(streamer) {
 		return
@@ -721,6 +766,111 @@ func (a *App) rotateStalledDropStreamerIfNeeded(eng *engine.Engine, drops []inve
 		Payload: a.getCombinedStreamers(),
 		Time:    time.Now().UTC(),
 	})
+}
+
+// checkWatchCreditWatchdog tracks whether Twitch is still crediting watch
+// time at all. Progress on any drop (or a campaign newly entering the
+// inventory) counts as credit. If nothing has been credited for
+// watchCreditStallThreshold while a drop streamer is actively watched, the
+// telemetry is being accepted but ignored — something the transport cannot
+// see because sendSpadeEvents still returns success.
+func (a *App) checkWatchCreditWatchdog(eng *engine.Engine, drops []inventory.Drop) {
+	watchedStreamer := a.activeDropStreamer(eng)
+
+	progress := make(map[string]int, len(drops))
+	for _, drop := range drops {
+		if drop.IsClaimed {
+			continue
+		}
+		key := drop.ID
+		if key == "" {
+			key = drop.CampaignID + "\x00" + drop.Name
+		}
+		progress[key] = drop.CurrentMinutes
+	}
+
+	now := time.Now()
+
+	a.watchCreditMu.Lock()
+	defer a.watchCreditMu.Unlock()
+
+	// The first poll only establishes the baseline.
+	credited := a.watchCreditProgress == nil
+	if !credited {
+		for key, minutes := range progress {
+			previous, tracked := a.watchCreditProgress[key]
+			if !tracked || minutes > previous {
+				credited = true
+				break
+			}
+		}
+	}
+	a.watchCreditProgress = progress
+
+	// While nothing is being watched no credit is expected, so the clock only
+	// runs when a drop streamer is active.
+	if credited || watchedStreamer == nil {
+		if credited && a.watchCreditAlerted && a.logger != nil {
+			a.logger.Info("drop watch credit resumed")
+		}
+		a.lastWatchCreditAt = now
+		a.watchCreditAlerted = false
+		return
+	}
+
+	stalledFor := now.Sub(a.lastWatchCreditAt)
+	if stalledFor < watchCreditStallThreshold {
+		return
+	}
+
+	if a.logger != nil {
+		a.logger.Warn("no watch minutes credited while actively watching; Twitch may have stopped counting this session",
+			slog.Duration("stalled_for", stalledFor.Round(time.Minute)),
+			slog.String("streamer", watchedStreamer.Login),
+			slog.String("game", watchedStreamer.GameName),
+		)
+	}
+
+	firstAlert := !a.watchCreditAlerted
+	a.watchCreditAlerted = true
+	if !firstAlert || a.notifier == nil {
+		return
+	}
+
+	streamerName := watchedStreamer.DisplayName
+	if streamerName == "" {
+		streamerName = watchedStreamer.Login
+	}
+	payload := notify.WebhookPayload{
+		Embeds: []notify.Embed{
+			{
+				Title:       "Watch Credit Stalled!",
+				Description: fmt.Sprintf("No drop minutes have been credited for **%s** while actively watching. Twitch may have stopped counting this session's watch time — consider restarting the bot.", stalledFor.Round(time.Minute)),
+				Color:       15158332, // Red (#E74C3C)
+				Fields: []notify.EmbedField{
+					{
+						Name:   "Streamer",
+						Value:  streamerName,
+						Inline: true,
+					},
+					{
+						Name:   "Game",
+						Value:  watchedStreamer.GameName,
+						Inline: true,
+					},
+				},
+				Footer: &notify.EmbedFooter{
+					Text: "TDropFarmer Bot - by Duvy",
+				},
+				Timestamp: now.UTC().Format(time.RFC3339),
+			},
+		},
+	}
+	go func() {
+		if err := a.notifier.Send(context.Background(), payload); err != nil && a.logger != nil {
+			a.logger.Warn("discord notification failed", slog.String("error", err.Error()))
+		}
+	}()
 }
 
 func dropProgressSnapshot(drops []inventory.Drop, gameName string) map[string]int {
@@ -883,10 +1033,17 @@ func (a *App) discoverGamesStreamers(ctx context.Context, client gameStreamDisco
 
 		var targetStreamers []domain.Streamer
 		for _, s := range streamers {
-			if !seen[s.Login] {
-				seen[s.Login] = true
-				targetStreamers = append(targetStreamers, s)
+			if seen[s.Login] || a.isStreamerOnRotationCooldown(s.Login) {
+				continue
 			}
+			seen[s.Login] = true
+			targetStreamers = append(targetStreamers, s)
+		}
+		if len(targetStreamers) == 0 {
+			// Every candidate was filtered (static overlap or stall-rotation
+			// cooldown); move on to the next game instead of farming nothing.
+			a.logger.Debug("all discovered streams filtered for game", slog.String("game", game))
+			continue
 		}
 
 		a.logger.Info("game discovery selected target",
