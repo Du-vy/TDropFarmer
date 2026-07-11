@@ -1191,16 +1191,24 @@ func (a *App) pollOnlineStatus(ctx context.Context, eng *engine.Engine, client *
 				continue
 			}
 
-			currentOnline := make(map[string]twitch.StreamInfo)
-			for _, stream := range streams {
-				currentOnline[stream.UserLogin] = stream
-			}
+			currentOnline := indexStreamsByUserID(streams)
+			notReturned := make([]string, 0)
 
 			a.streamersMu.Lock()
 			for _, s := range streamers {
 				wasOnline := online[s.Login]
-				streamInfo, isOnline := currentOnline[s.Login]
+				streamInfo, isOnline := currentOnline[s.ID]
 				online[s.Login] = isOnline
+				if !isOnline {
+					notReturned = append(notReturned, s.Login)
+				}
+				if isOnline && !strings.EqualFold(streamInfo.UserLogin, s.Login) {
+					a.logger.Debug("stream login differs from resolved login; matched by user ID",
+						slog.String("resolved_login", s.Login),
+						slog.String("stream_login", streamInfo.UserLogin),
+						slog.String("user_id", s.ID),
+					)
+				}
 
 				// Update BroadcastID inside protected slices
 				for i := range a.staticStreamers {
@@ -1250,8 +1258,21 @@ func (a *App) pollOnlineStatus(ctx context.Context, eng *engine.Engine, client *
 				}
 			}
 			a.streamersMu.Unlock()
+			a.logger.Debug("stream status poll completed",
+				slog.Int("requested", len(streamers)),
+				slog.Int("online", len(streams)),
+				slog.Any("not_returned", notReturned),
+			)
 		}
 	}
+}
+
+func indexStreamsByUserID(streams []twitch.StreamInfo) map[string]twitch.StreamInfo {
+	indexed := make(map[string]twitch.StreamInfo, len(streams))
+	for _, stream := range streams {
+		indexed[stream.UserID] = stream
+	}
+	return indexed
 }
 
 func (a *App) runMinuteWatched(ctx context.Context, eng *engine.Engine, gqlClient gql.Client) {

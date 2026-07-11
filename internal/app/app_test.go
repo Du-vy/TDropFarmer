@@ -12,6 +12,7 @@ import (
 	"github.com/Du-vy/TDropFarmer/internal/config"
 	"github.com/Du-vy/TDropFarmer/internal/domain"
 	"github.com/Du-vy/TDropFarmer/internal/engine"
+	"github.com/Du-vy/TDropFarmer/internal/twitch"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/channelpoints"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/gql"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/inventory"
@@ -787,6 +788,24 @@ func TestActiveDropStreamerPrefersDynamicCandidate(t *testing.T) {
 	}
 	if streamer.Login != "dynamic" {
 		t.Fatalf("expected dynamic streamer, got %q", streamer.Login)
+	}
+}
+
+func TestIndexStreamsByUserIDIgnoresCanonicalLoginDifferences(t *testing.T) {
+	streams := []twitch.StreamInfo{
+		{UserID: "123", UserLogin: "renamed_channel", ID: "broadcast-1"},
+	}
+
+	indexed := indexStreamsByUserID(streams)
+	stream, ok := indexed["123"]
+	if !ok {
+		t.Fatal("expected stream to be indexed by stable user ID")
+	}
+	if stream.UserLogin != "renamed_channel" || stream.ID != "broadcast-1" {
+		t.Fatalf("unexpected indexed stream: %+v", stream)
+	}
+	if _, ok := indexed["old_channel_name"]; ok {
+		t.Fatal("stream index must not depend on login")
 	}
 }
 
