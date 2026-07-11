@@ -1,8 +1,6 @@
 package playback
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -18,7 +16,10 @@ import (
 	"github.com/Du-vy/TDropFarmer/internal/twitch/gql"
 )
 
-var usherBaseURL = "https://usher.ttvnw.net/api/channel/hls"
+var (
+	usherBaseURL = "https://usher.ttvnw.net/api/channel/hls"
+	spadeURL     = "https://spade.twitch.tv/track"
+)
 
 const (
 
@@ -31,12 +32,6 @@ const (
     value
     signature
     __typename
-  }
-}`
-
-	sendSpadeEventsMutation = `mutation SendEvents($input: SendSpadeEventsInput!) {
-  sendSpadeEvents(input: $input) {
-    statusCode
   }
 }`
 )
@@ -179,43 +174,34 @@ func (w *Watcher) SendMinuteWatched(ctx context.Context, streamer domain.Streame
 		return fmt.Errorf("head media segment: %w", err)
 	}
 
-	if err := w.sendSpadeEvents(ctx, streamer, userID); err != nil {
+	if err := w.sendSpadeEvent(ctx, streamer, userID); err != nil {
 		return fmt.Errorf("send watch event: %w", err)
 	}
 
 	return nil
 }
 
-func (w *Watcher) sendSpadeEvents(ctx context.Context, streamer domain.Streamer, userID string) error {
-	encoded, err := encodeGQLWatchPayload(streamer, userID)
+func (w *Watcher) sendSpadeEvent(ctx context.Context, streamer domain.Streamer, userID string) error {
+	encoded, err := encodeSpadePayload(streamer, userID)
 	if err != nil {
 		return err
 	}
 
-	response, err := w.fetcher.Client.Do(ctx, gql.Request{
-		Query: sendSpadeEventsMutation,
-		Variables: map[string]any{
-			"input": map[string]any{
-				"data":       encoded,
-				"repository": "twilight",
-				"encoding":   "GZIP_B64",
-			},
-		},
-	})
+	form := url.Values{}
+	form.Set("data", encoded)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, spadeURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
 	}
-
-	var result struct {
-		SendSpadeEvents struct {
-			StatusCode int `json:"statusCode"`
-		} `json:"sendSpadeEvents"`
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", userAgent())
+	resp, err := w.client.Do(req)
+	if err != nil {
+		return err
 	}
-	if err := json.Unmarshal(response.Data, &result); err != nil {
-		return fmt.Errorf("decode watch event response: %w", err)
-	}
-	if result.SendSpadeEvents.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("unexpected watch event status %d", result.SendSpadeEvents.StatusCode)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("unexpected watch event status %d", resp.StatusCode)
 	}
 	return nil
 }
@@ -258,24 +244,19 @@ func (w *Watcher) httpHead(ctx context.Context, target string) error {
 	return nil
 }
 
-func encodeGQLWatchPayload(streamer domain.Streamer, userID string) (string, error) {
+func encodeSpadePayload(streamer domain.Streamer, userID string) (string, error) {
 	payload := []map[string]any{
 		{
 			"event": "minute-watched",
 			"properties": map[string]any{
-				"broadcast_id":   streamer.BroadcastID,
-				"channel_id":     streamer.ID,
-				"channel":        streamer.Login,
-				"client_time":    time.Now().UTC().Format(time.RFC3339Nano),
-				"game":           streamer.GameName,
-				"game_id":        streamer.GameID,
-				"hidden":         false,
-				"is_live":        true,
-				"live":           true,
-				"logged_in":      true,
-				"minutes_logged": 1,
-				"muted":          false,
-				"user_id":        userID,
+				"broadcast_id": streamer.BroadcastID,
+				"channel_id":   streamer.ID,
+				"player":       "site",
+				"user_id":      userID,
+				"live":         true,
+				"channel":      streamer.Login,
+				"game":         streamer.GameName,
+				"game_id":      streamer.GameID,
 			},
 		},
 	}
@@ -285,17 +266,7 @@ func encodeGQLWatchPayload(streamer domain.Streamer, userID string) (string, err
 		return "", err
 	}
 
-	var compressed bytes.Buffer
-	writer := gzip.NewWriter(&compressed)
-	if _, err := writer.Write(raw); err != nil {
-		_ = writer.Close()
-		return "", err
-	}
-	if err := writer.Close(); err != nil {
-		return "", err
-	}
-
-	return base64.StdEncoding.EncodeToString(compressed.Bytes()), nil
+	return base64.StdEncoding.EncodeToString(raw), nil
 }
 
 func nonEmptyLines(text string) []string {

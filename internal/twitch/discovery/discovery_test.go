@@ -200,3 +200,58 @@ func TestGetLiveStreamsForCampaignsSkipsChannelsWithDifferentDrops(t *testing.T)
 		t.Fatalf("expected only Season 9 channels, got %+v", streamers)
 	}
 }
+
+func TestGetLiveStreamsForCampaignsFallsBackToDropEnabledChannels(t *testing.T) {
+	edges := make([]map[string]any, 3)
+	for i := range edges {
+		channelID := fmt.Sprintf("channel-%d", i+1)
+		edges[i] = map[string]any{
+			"node": map[string]any{
+				"id": fmt.Sprintf("stream-%d", i+1),
+				"broadcaster": map[string]any{
+					"id":          channelID,
+					"login":       channelID,
+					"displayName": channelID,
+				},
+				"game": map[string]any{"id": "game-1", "name": "Target Game"},
+			},
+		}
+	}
+	directoryData, err := json.Marshal(map[string]any{
+		"game": map[string]any{
+			"streams": map[string]any{"edges": edges},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal directory response: %v", err)
+	}
+
+	checkedChannels := 0
+	client := Client{Client: mockGQLClient{doFunc: func(ctx context.Context, req gql.Request) (gql.Response, error) {
+		switch req.OperationName {
+		case gameRedirectOperation:
+			return gql.Response{Data: json.RawMessage(`{"game":{"slug":"target-game"}}`)}, nil
+		case gameDirectoryOperation:
+			if got := req.Variables["limit"]; got != campaignDiscoveryLimit {
+				t.Fatalf("directory limit = %v, want %d", got, campaignDiscoveryLimit)
+			}
+			return gql.Response{Data: directoryData}, nil
+		case availableDropsOperation:
+			checkedChannels++
+			return gql.Response{Data: json.RawMessage(`{"channel":{"viewerDropCampaigns":[{"id":"support-a-streamer"}]}}`)}, nil
+		default:
+			return gql.Response{}, fmt.Errorf("unexpected operation %q", req.OperationName)
+		}
+	}}}
+
+	streamers, err := client.GetLiveStreamsForCampaigns(context.Background(), "Target Game", []string{"target-campaign"}, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(streamers) != 2 || streamers[0].Login != "channel-1" || streamers[1].Login != "channel-2" {
+		t.Fatalf("expected first drop-enabled channels as fallback, got %+v", streamers)
+	}
+	if checkedChannels != 3 {
+		t.Fatalf("campaign checks = %d, want 3", checkedChannels)
+	}
+}

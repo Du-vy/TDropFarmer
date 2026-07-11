@@ -792,8 +792,8 @@ func (a *App) rotateStalledDropStreamerIfNeeded(eng *engine.Engine, drops []inve
 // time at all. Progress on any drop (or a campaign newly entering the
 // inventory) counts as credit. If nothing has been credited for
 // watchCreditStallThreshold while a drop streamer is actively watched, the
-// telemetry is being accepted but ignored — something the transport cannot
-// see because sendSpadeEvents still returns success.
+// telemetry is being accepted but ignored, which an HTTP success alone cannot
+// detect.
 func (a *App) checkWatchCreditWatchdog(eng *engine.Engine, drops []inventory.Drop) {
 	watchedStreamer := a.activeDropStreamer(eng)
 
@@ -1217,7 +1217,7 @@ func (a *App) runMinuteWatched(ctx context.Context, eng *engine.Engine, gqlClien
 	fetcher := playback.TokenFetcher{Client: gqlClient}
 	watcher := playback.NewWatcher(fetcher)
 
-	a.logger.Info("watch telemetry configured", slog.String("transport", "graphql_send_spade_events"))
+	a.logger.Info("watch telemetry configured", slog.String("transport", "spade_direct"))
 
 	for {
 		nextInterval := randomDuration(55*time.Second, 65*time.Second)

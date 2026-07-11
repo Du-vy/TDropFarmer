@@ -1,15 +1,13 @@
 package playback
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -18,22 +16,11 @@ import (
 )
 
 type mockGQLClient struct {
-	response      gql.Response
-	watchResponse gql.Response
-	err           error
-	watchErr      error
+	response gql.Response
+	err      error
 }
 
 func (m mockGQLClient) Do(ctx context.Context, req gql.Request) (gql.Response, error) {
-	if strings.Contains(req.Query, "sendSpadeEvents") {
-		if m.watchErr != nil {
-			return gql.Response{}, m.watchErr
-		}
-		if len(m.watchResponse.Data) > 0 {
-			return m.watchResponse, nil
-		}
-		return gql.Response{Data: []byte(`{"sendSpadeEvents":{"statusCode":204}}`)}, nil
-	}
 	return m.response, m.err
 }
 
@@ -74,6 +61,7 @@ func TestFetch(t *testing.T) {
 }
 
 func TestWatcher_SendMinuteWatched(t *testing.T) {
+	var spadePayload string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.Contains(r.URL.Path, "test_channel.m3u8"):
@@ -96,6 +84,13 @@ func TestWatcher_SendMinuteWatched(t *testing.T) {
 			if r.Method != http.MethodPost {
 				t.Errorf("expected POST request for spade, got %s", r.Method)
 			}
+			if got := r.Header.Get("Content-Type"); got != "application/x-www-form-urlencoded" {
+				t.Errorf("Content-Type = %q, want application/x-www-form-urlencoded", got)
+			}
+			if err := r.ParseForm(); err != nil {
+				t.Errorf("parse spade form: %v", err)
+			}
+			spadePayload = r.Form.Get("data")
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.String())
@@ -105,8 +100,13 @@ func TestWatcher_SendMinuteWatched(t *testing.T) {
 	defer server.Close()
 
 	oldUsherURL := usherBaseURL
+	oldSpadeURL := spadeURL
 	usherBaseURL = server.URL
-	defer func() { usherBaseURL = oldUsherURL }()
+	spadeURL = server.URL + "/track"
+	defer func() {
+		usherBaseURL = oldUsherURL
+		spadeURL = oldSpadeURL
+	}()
 
 	tokenClient := mockGQLClient{
 		response: gql.Response{
@@ -126,10 +126,14 @@ func TestWatcher_SendMinuteWatched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendMinuteWatched failed: %v", err)
 	}
+	if spadePayload == "" {
+		t.Fatal("spade payload was not posted")
+	}
+	assertSpadePayload(t, spadePayload)
 }
 
-func TestEncodeGQLWatchPayload(t *testing.T) {
-	encoded, err := encodeGQLWatchPayload(domain.Streamer{
+func TestEncodeSpadePayload(t *testing.T) {
+	encoded, err := encodeSpadePayload(domain.Streamer{
 		Login:       "test_channel",
 		ID:          "12345",
 		GameID:      "game-1",
@@ -137,30 +141,23 @@ func TestEncodeGQLWatchPayload(t *testing.T) {
 		BroadcastID: "987654321",
 	}, "user_id_123")
 	if err != nil {
-		t.Fatalf("encodeGQLWatchPayload returned error: %v", err)
+		t.Fatalf("encodeSpadePayload returned error: %v", err)
 	}
+	assertSpadePayload(t, encoded)
+}
 
-	compressed, err := base64.StdEncoding.DecodeString(encoded)
+func assertSpadePayload(t *testing.T, encoded string) {
+	t.Helper()
+	raw, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		t.Fatalf("payload is not base64: %v", err)
-	}
-	reader, err := gzip.NewReader(bytes.NewReader(compressed))
-	if err != nil {
-		t.Fatalf("payload is not gzip: %v", err)
-	}
-	decompressed, err := io.ReadAll(reader)
-	if err != nil {
-		t.Fatalf("read gzip payload: %v", err)
-	}
-	if err := reader.Close(); err != nil {
-		t.Fatalf("close gzip payload: %v", err)
 	}
 
 	var events []struct {
 		Event      string         `json:"event"`
 		Properties map[string]any `json:"properties"`
 	}
-	if err := json.Unmarshal(decompressed, &events); err != nil {
+	if err := json.Unmarshal(raw, &events); err != nil {
 		t.Fatalf("decode watch events: %v", err)
 	}
 	if len(events) != 1 {
@@ -173,7 +170,22 @@ func TestEncodeGQLWatchPayload(t *testing.T) {
 	if props["broadcast_id"] != "987654321" || props["channel_id"] != "12345" || props["channel"] != "test_channel" {
 		t.Fatalf("unexpected channel properties: %+v", props)
 	}
-	if props["game"] != "Test Game" || props["game_id"] != "game-1" || props["minutes_logged"] != float64(1) || props["user_id"] != "user_id_123" {
+	if props["game"] != "Test Game" || props["game_id"] != "game-1" || props["player"] != "site" || props["live"] != true || props["user_id"] != "user_id_123" {
 		t.Fatalf("unexpected watch properties: %+v", props)
+	}
+}
+
+func TestSpadePayloadIsFormSafe(t *testing.T) {
+	encoded, err := encodeSpadePayload(domain.Streamer{Login: "test_channel"}, "user_id_123")
+	if err != nil {
+		t.Fatalf("encodeSpadePayload returned error: %v", err)
+	}
+	form := url.Values{"data": {encoded}}.Encode()
+	parsed, err := url.ParseQuery(form)
+	if err != nil {
+		t.Fatalf("parse encoded form: %v", err)
+	}
+	if parsed.Get("data") != encoded {
+		t.Fatal("base64 payload changed during form encoding")
 	}
 }

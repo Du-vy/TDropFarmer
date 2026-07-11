@@ -128,16 +128,38 @@ func (c Client) GetLiveStreamsForCampaigns(ctx context.Context, gameName string,
 	}
 
 	var streamers []domain.Streamer
+	var dropEnabledFallback []domain.Streamer
+	inspectedCampaignChannels := 0
+	campaignCheckErrors := 0
 	for _, edge := range data.Game.Streams.Edges {
 		if edge.Node.Broadcaster == nil {
 			continue
 		}
+		var gameID, gameName string
+		if edge.Node.Game != nil {
+			gameID = edge.Node.Game.ID
+			gameName = edge.Node.Game.Name
+		}
+		candidate := domain.Streamer{
+			ID:          edge.Node.Broadcaster.ID,
+			Login:       edge.Node.Broadcaster.Login,
+			DisplayName: edge.Node.Broadcaster.DisplayName,
+			GameID:      gameID,
+			GameName:    gameName,
+			Title:       edge.Node.Title,
+			BroadcastID: edge.Node.ID,
+		}
 		if len(desiredCampaigns) > 0 {
+			if len(dropEnabledFallback) < limit {
+				dropEnabledFallback = append(dropEnabledFallback, candidate)
+			}
+			inspectedCampaignChannels++
 			matches, err := c.channelHasCampaign(ctx, edge.Node.Broadcaster.ID, desiredCampaigns)
 			if err != nil {
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
 				}
+				campaignCheckErrors++
 				if c.Logger != nil {
 					c.Logger.Warn("channel drop campaign check failed; skipping channel",
 						slog.String("channel", edge.Node.Broadcaster.Login),
@@ -150,30 +172,39 @@ func (c Client) GetLiveStreamsForCampaigns(ctx context.Context, gameName string,
 				continue
 			}
 		}
-		var gameID, gameName string
-		if edge.Node.Game != nil {
-			gameID = edge.Node.Game.ID
-			gameName = edge.Node.Game.Name
-		}
-		streamers = append(streamers, domain.Streamer{
-			ID:          edge.Node.Broadcaster.ID,
-			Login:       edge.Node.Broadcaster.Login,
-			DisplayName: edge.Node.Broadcaster.DisplayName,
-			GameID:      gameID,
-			GameName:    gameName,
-			Title:       edge.Node.Title,
-			BroadcastID: edge.Node.ID,
-		})
+		streamers = append(streamers, candidate)
 		if len(streamers) >= limit {
 			break
 		}
 	}
 
+	if len(streamers) == 0 && len(desiredCampaigns) > 0 && len(dropEnabledFallback) > 0 {
+		if c.Logger != nil {
+			c.Logger.Info("game discovery using drop-enabled fallback after campaign checks",
+				slog.String("game", gameName),
+				slog.String("slug", slug),
+				slog.Int("inspected", inspectedCampaignChannels),
+				slog.Int("errors", campaignCheckErrors),
+				slog.Int("count", len(dropEnabledFallback)),
+			)
+		}
+		return dropEnabledFallback, nil
+	}
+
 	if len(streamers) == 0 && c.Logger != nil {
-		c.Logger.Info("game discovery found no drop-enabled streams",
-			slog.String("game", gameName),
-			slog.String("slug", slug),
-		)
+		if len(desiredCampaigns) > 0 {
+			c.Logger.Info("game discovery found no matching campaign streams in inspected candidates",
+				slog.String("game", gameName),
+				slog.String("slug", slug),
+				slog.Int("inspected", inspectedCampaignChannels),
+				slog.Int("errors", campaignCheckErrors),
+			)
+		} else {
+			c.Logger.Info("game discovery found no drop-enabled streams",
+				slog.String("game", gameName),
+				slog.String("slug", slug),
+			)
+		}
 	}
 
 	return streamers, nil
