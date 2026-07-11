@@ -169,6 +169,7 @@ func (a *App) Run(ctx context.Context) error {
 
 	// Load initial active games from inventory or active campaigns if drops are enabled
 	var initialActiveGames []string
+	initialCampaignsLoaded := false
 	if a.config.Features.ClaimDropsEnabled() {
 		inventoryClient := inventory.Client{Client: gqlClient, UserID: a.userID, Logger: a.logger, IgnoredGames: a.config.Watch.IgnoredGames}
 		drops, errInv := inventoryClient.GetInventory(ctx)
@@ -179,6 +180,7 @@ func (a *App) Run(ctx context.Context) error {
 			a.lastDrops = drops
 			a.dropsMu.Unlock()
 			initialActiveGames = a.sortActiveGames(ctx, inventoryClient, drops, "")
+			initialCampaignsLoaded = true
 		}
 		a.activeGamesMu.Lock()
 		a.activeGames = initialActiveGames
@@ -263,7 +265,7 @@ func (a *App) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			a.pollDrops(ctx, eng, inventoryClient)
+			a.pollDrops(ctx, eng, inventoryClient, initialCampaignsLoaded)
 		}()
 	}
 
@@ -402,9 +404,10 @@ func (a *App) Run(ctx context.Context) error {
 	return runErr
 }
 
-func (a *App) pollDrops(ctx context.Context, eng *engine.Engine, invClient inventory.Client) {
-	// First check immediately at startup
-	a.checkAndClaimDrops(ctx, eng, invClient)
+func (a *App) pollDrops(ctx context.Context, eng *engine.Engine, invClient inventory.Client, initialCampaignsLoaded bool) {
+	// Inventory and claims still run immediately, but the expensive campaign
+	// scan was already completed synchronously before initial discovery.
+	a.checkAndClaimDropsWithCampaignRefresh(ctx, eng, invClient, !initialCampaignsLoaded)
 
 	for {
 		nextInterval := randomDuration(12*time.Minute, 18*time.Minute)
@@ -420,6 +423,10 @@ func (a *App) pollDrops(ctx context.Context, eng *engine.Engine, invClient inven
 }
 
 func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invClient inventory.Client) {
+	a.checkAndClaimDropsWithCampaignRefresh(ctx, eng, invClient, true)
+}
+
+func (a *App) checkAndClaimDropsWithCampaignRefresh(ctx context.Context, eng *engine.Engine, invClient inventory.Client, refreshActiveGames bool) {
 	drops, err := invClient.GetInventory(ctx)
 	if err != nil {
 		a.logger.Warn("fetch drops inventory failed", slog.String("error", err.Error()))
@@ -478,6 +485,7 @@ func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invCli
 				continue
 			}
 			if success {
+				refreshActiveGames = true
 				drops[i].IsClaimed = true
 				drops[i].IsClaimable = false
 				drops[i].IsEarnable = false
@@ -502,6 +510,9 @@ func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invCli
 	a.dropsMu.Lock()
 	a.lastDrops = drops
 	a.dropsMu.Unlock()
+	if !refreshActiveGames {
+		return
+	}
 
 	activeGames := a.sortActiveGames(ctx, invClient, drops, a.activeDynamicDropGame(eng))
 

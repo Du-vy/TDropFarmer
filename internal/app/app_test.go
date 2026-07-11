@@ -102,6 +102,22 @@ type claimFlowGQLClient struct {
 	claimResponse     []byte
 }
 
+type campaignScanCountingClient struct {
+	dashboardCalls int
+}
+
+func (c *campaignScanCountingClient) Do(ctx context.Context, req gql.Request) (gql.Response, error) {
+	switch req.OperationName {
+	case "Inventory":
+		return gql.Response{Data: []byte(`{"currentUser":{"inventory":{"dropCampaignsInProgress":[]}}}`)}, nil
+	case "ViewerDropsDashboard":
+		c.dashboardCalls++
+		return gql.Response{Data: []byte(`{"currentUser":{"dropCampaigns":[]}}`)}, nil
+	default:
+		return gql.Response{}, nil
+	}
+}
+
 func (m claimFlowGQLClient) Do(ctx context.Context, req gql.Request) (gql.Response, error) {
 	switch req.OperationName {
 	case "Inventory":
@@ -162,6 +178,31 @@ func TestCheckAndClaimDropsRemovesClaimedGameBeforeSorting(t *testing.T) {
 	}
 	if len(app.lastDrops) == 0 || !app.lastDrops[0].IsClaimed || app.lastDrops[0].IsClaimable || app.lastDrops[0].IsEarnable {
 		t.Fatalf("expected claimed drop to be reflected in lastDrops, got %+v", app.lastDrops)
+	}
+}
+
+func TestInitialDropCheckReusesLoadedCampaigns(t *testing.T) {
+	cfg := config.Config{
+		Watch: config.WatchConfig{
+			FallbackAllCampaigns: true,
+			AutoStartCampaigns:   true,
+		},
+		Features: config.FeatureConfig{ClaimDrops: config.Bool(true)},
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	app := &App{config: cfg, logger: logger}
+	eng := engine.New(cfg, nil, logger)
+	client := &campaignScanCountingClient{}
+	invClient := inventory.Client{Client: client, UserID: "viewer"}
+
+	app.checkAndClaimDropsWithCampaignRefresh(context.Background(), eng, invClient, false)
+	if client.dashboardCalls != 0 {
+		t.Fatalf("initial drop check repeated campaign scan %d times", client.dashboardCalls)
+	}
+
+	app.checkAndClaimDrops(context.Background(), eng, invClient)
+	if client.dashboardCalls != 1 {
+		t.Fatalf("periodic drop check campaign scans = %d, want 1", client.dashboardCalls)
 	}
 }
 
