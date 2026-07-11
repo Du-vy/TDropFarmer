@@ -45,6 +45,9 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Watch.TickSeconds == 0 {
 		cfg.Watch.TickSeconds = 20
 	}
+	if cfg.Watch.AuxiliaryLeaseMinutes == 0 {
+		cfg.Watch.AuxiliaryLeaseMinutes = 16
+	}
 
 	if cfg.Watch.IgnoredGames == nil {
 		cfg.Watch.IgnoredGames = []string{"Special Events", "Just Chatting"}

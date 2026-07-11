@@ -21,6 +21,9 @@ func Validate(cfg Config) error {
 	if cfg.Watch.TickSeconds < 5 {
 		errs = append(errs, fmt.Errorf("watch.tick_seconds must be at least 5"))
 	}
+	if cfg.Watch.AuxiliaryWatch && cfg.Watch.AuxiliaryLeaseMinutes < 10 {
+		errs = append(errs, fmt.Errorf("watch.auxiliary_lease_minutes must be at least 10 when auxiliary watch is enabled"))
+	}
 
 	for i, game := range cfg.Watch.PriorityGames {
 		if strings.TrimSpace(game) == "" {

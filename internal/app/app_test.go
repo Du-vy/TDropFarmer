@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -840,6 +841,9 @@ func TestRotateStalledDropStreamerRotatesWhenGameMissingFromInventory(t *testing
 	if !app.isStreamerOnRotationCooldown("dynamic") {
 		t.Fatal("expected rotated streamer to be on cooldown")
 	}
+	if !app.isAuxiliaryWatchDisabled() {
+		t.Fatal("expected stalled drop progress to disable auxiliary watch")
+	}
 }
 
 func TestDiscoverGamesStreamersSkipsStreamersOnRotationCooldown(t *testing.T) {
@@ -912,12 +916,242 @@ func TestCheckWatchCreditWatchdogAlertsAndRecovers(t *testing.T) {
 	if !app.watchCreditAlerted {
 		t.Fatal("watchdog did not alert after threshold elapsed")
 	}
+	if !app.auxiliaryWatchDisabled {
+		t.Fatal("watchdog did not disable auxiliary watch")
+	}
 
 	// Any credited minute clears the alert.
 	drops[0].CurrentMinutes = 101
 	app.checkWatchCreditWatchdog(eng, drops)
 	if app.watchCreditAlerted {
 		t.Fatal("watchdog alert not cleared after credit resumed")
+	}
+}
+
+type fakeWatchTelemetrySender struct {
+	calls       []string
+	primaryErr  error
+	presenceErr error
+}
+
+type blockingPresenceSender struct {
+	started chan struct{}
+}
+
+func (b *blockingPresenceSender) SendMinuteWatched(ctx context.Context, streamer domain.Streamer, userID string) error {
+	return nil
+}
+
+func (b *blockingPresenceSender) SendPresence(ctx context.Context, streamer domain.Streamer, userID string) error {
+	close(b.started)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (f *fakeWatchTelemetrySender) SendMinuteWatched(ctx context.Context, streamer domain.Streamer, userID string) error {
+	f.calls = append(f.calls, "primary:"+streamer.Login)
+	return f.primaryErr
+}
+
+func (f *fakeWatchTelemetrySender) SendPresence(ctx context.Context, streamer domain.Streamer, userID string) error {
+	f.calls = append(f.calls, "auxiliary:"+streamer.Login)
+	return f.presenceErr
+}
+
+func TestWatchTelemetryEstablishesPrimaryBeforeAuxiliary(t *testing.T) {
+	app, eng := newActiveDropStreamerTestApp(t)
+	app.config.Watch.AuxiliaryWatch = true
+	app.config.Watch.AuxiliaryLeaseMinutes = 16
+	app.staticStreamers[0].BroadcastID = "stream-1"
+	app.staticStreamers[0].GameID = "other-game"
+	app.staticStreamers[0].GameName = "Other Game"
+
+	sender := &fakeWatchTelemetrySender{}
+	state := watchTelemetryState{lastAuxiliaryWatch: make(map[string]time.Time)}
+	started := time.Now()
+
+	app.processWatchTelemetry(context.Background(), eng, sender, &state, started)
+	if state.primarySuccessfulPulses != 1 || state.auxiliaryLogin != "" {
+		t.Fatalf("after first primary pulse: %+v", state)
+	}
+
+	app.processWatchTelemetry(context.Background(), eng, sender, &state, started.Add(65*time.Second))
+	if state.primarySuccessfulPulses != 2 || state.auxiliaryLogin != "" {
+		t.Fatalf("after second primary pulse: %+v", state)
+	}
+
+	app.processWatchTelemetry(context.Background(), eng, sender, &state, started.Add(70*time.Second))
+	if state.auxiliaryLogin != "static" {
+		t.Fatalf("expected static auxiliary after handshake, got %+v", state)
+	}
+	if len(sender.calls) != 2 {
+		t.Fatalf("auxiliary sent before offset: %v", sender.calls)
+	}
+
+	app.processWatchTelemetry(context.Background(), eng, sender, &state, started.Add(101*time.Second))
+	want := []string{"primary:dynamic", "primary:dynamic", "auxiliary:static"}
+	if len(sender.calls) != len(want) {
+		t.Fatalf("calls = %v, want %v", sender.calls, want)
+	}
+	for i := range want {
+		if sender.calls[i] != want[i] {
+			t.Fatalf("calls = %v, want %v", sender.calls, want)
+		}
+	}
+}
+
+func TestWatchTelemetryPausesAuxiliaryWhenPrimarySessionChanges(t *testing.T) {
+	app, eng := newActiveDropStreamerTestApp(t)
+	app.config.Watch.AuxiliaryWatch = true
+	app.config.Watch.AuxiliaryLeaseMinutes = 16
+	app.staticStreamers[0].BroadcastID = "stream-1"
+
+	sender := &fakeWatchTelemetrySender{}
+	state := watchTelemetryState{
+		primarySession:          "dynamic\x00stream-2\x00",
+		primarySuccessfulPulses: 2,
+		auxiliaryLogin:          "static",
+		auxiliarySession:        "static\x00stream-1\x00",
+		auxiliaryLeaseStarted:   time.Now(),
+		nextAuxiliaryPulse:      time.Now().Add(time.Minute),
+		lastAuxiliaryWatch:      make(map[string]time.Time),
+	}
+	app.dynamicStreamers[0].BroadcastID = "stream-3"
+
+	app.processWatchTelemetry(context.Background(), eng, sender, &state, time.Now())
+	if state.auxiliaryLogin != "" {
+		t.Fatalf("auxiliary remained active after primary transition: %+v", state)
+	}
+	if state.primarySuccessfulPulses != 1 {
+		t.Fatalf("new primary session did not restart handshake: %+v", state)
+	}
+	if len(sender.calls) != 1 || sender.calls[0] != "primary:dynamic" {
+		t.Fatalf("unexpected calls after primary transition: %v", sender.calls)
+	}
+}
+
+func TestWatchTelemetryPausesAuxiliaryWhenPrimaryPulseFails(t *testing.T) {
+	app, eng := newActiveDropStreamerTestApp(t)
+	app.config.Watch.AuxiliaryWatch = true
+	app.config.Watch.AuxiliaryLeaseMinutes = 16
+	app.staticStreamers[0].BroadcastID = "stream-1"
+	now := time.Now()
+	sender := &fakeWatchTelemetrySender{primaryErr: errors.New("primary unavailable")}
+	state := watchTelemetryState{
+		primarySession:          "dynamic\x00stream-2\x00",
+		primarySuccessfulPulses: 2,
+		nextPrimaryPulse:        now,
+		auxiliaryLogin:          "static",
+		auxiliarySession:        "static\x00stream-1\x00",
+		auxiliaryLeaseStarted:   now.Add(-time.Minute),
+		nextAuxiliaryPulse:      now.Add(time.Minute),
+		lastAuxiliaryWatch:      make(map[string]time.Time),
+	}
+
+	app.processWatchTelemetry(context.Background(), eng, sender, &state, now)
+	if state.auxiliaryLogin != "" || state.primarySuccessfulPulses != 0 {
+		t.Fatalf("primary failure did not reset safe state: %+v", state)
+	}
+	if len(sender.calls) != 1 || sender.calls[0] != "primary:dynamic" {
+		t.Fatalf("unexpected calls after primary failure: %v", sender.calls)
+	}
+}
+
+func TestSelectAuxiliaryStreamerUsesLeastRecentlyWatched(t *testing.T) {
+	app := &App{staticStreamers: []domain.Streamer{
+		{Login: "primary", BroadcastID: "broadcast-1", GameName: "Primary Game"},
+		{Login: "recent", BroadcastID: "broadcast-2", GameName: "Just Chatting"},
+		{Login: "unserved", BroadcastID: "broadcast-3", GameName: "Music"},
+	}}
+	selected := app.selectAuxiliaryStreamer("primary", map[string]time.Time{
+		"recent": time.Now(),
+	}, nil, time.Now())
+	if selected == nil || selected.Login != "unserved" {
+		t.Fatalf("expected unserved auxiliary, got %+v", selected)
+	}
+}
+
+func TestSelectAuxiliaryStreamerExcludesActiveDropGamesAndBackoff(t *testing.T) {
+	now := time.Now()
+	app := &App{
+		activeGames: []string{"Drop Game"},
+		staticStreamers: []domain.Streamer{
+			{Login: "drop_candidate", BroadcastID: "broadcast-1", GameName: "Drop Game"},
+			{Login: "safe_candidate", BroadcastID: "broadcast-2", GameName: "Music"},
+		},
+	}
+	selected := app.selectAuxiliaryStreamer("primary", nil, nil, now)
+	if selected == nil || selected.Login != "safe_candidate" {
+		t.Fatalf("expected safe non-drop auxiliary, got %+v", selected)
+	}
+
+	selected = app.selectAuxiliaryStreamer("primary", nil, map[string]time.Time{
+		"safe_candidate": now.Add(time.Minute),
+	}, now)
+	if selected != nil {
+		t.Fatalf("expected no candidate while safe streamer is in backoff, got %+v", selected)
+	}
+}
+
+func TestWatchTelemetrySkipsAuxiliaryWithoutSafePrimaryWindow(t *testing.T) {
+	app, eng := newActiveDropStreamerTestApp(t)
+	app.config.Watch.AuxiliaryWatch = true
+	app.config.Watch.AuxiliaryLeaseMinutes = 16
+	app.staticStreamers[0].BroadcastID = "stream-1"
+	app.staticStreamers[0].GameName = "Other Game"
+	now := time.Now()
+	sender := &fakeWatchTelemetrySender{}
+	state := watchTelemetryState{
+		primarySession:          "dynamic\x00stream-2\x00",
+		primarySuccessfulPulses: 2,
+		nextPrimaryPulse:        now.Add(primaryPulseSafetyMargin + minimumAuxiliaryWindow - time.Second),
+		auxiliaryLogin:          "static",
+		auxiliarySession:        "static\x00stream-1\x00",
+		auxiliaryLeaseStarted:   now.Add(-time.Minute),
+		nextAuxiliaryPulse:      now,
+		lastAuxiliaryWatch:      make(map[string]time.Time),
+	}
+
+	app.processWatchTelemetry(context.Background(), eng, sender, &state, now)
+	if len(sender.calls) != 0 {
+		t.Fatalf("auxiliary request started without a safe primary window: %v", sender.calls)
+	}
+}
+
+func TestDisableAuxiliaryWatchCancelsInFlightPresence(t *testing.T) {
+	app, eng := newActiveDropStreamerTestApp(t)
+	app.config.Watch.AuxiliaryWatch = true
+	app.config.Watch.AuxiliaryLeaseMinutes = 16
+	app.staticStreamers[0].BroadcastID = "stream-1"
+	app.staticStreamers[0].GameName = "Other Game"
+	now := time.Now()
+	sender := &blockingPresenceSender{started: make(chan struct{})}
+	state := watchTelemetryState{
+		primarySession:          "dynamic\x00stream-2\x00",
+		primarySuccessfulPulses: 2,
+		nextPrimaryPulse:        now.Add(time.Minute),
+		auxiliaryLogin:          "static",
+		auxiliarySession:        "static\x00stream-1\x00",
+		auxiliaryLeaseStarted:   now.Add(-time.Minute),
+		nextAuxiliaryPulse:      now,
+		lastAuxiliaryWatch:      make(map[string]time.Time),
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		app.processWatchTelemetry(context.Background(), eng, sender, &state, now)
+	}()
+
+	select {
+	case <-sender.started:
+	case <-time.After(time.Second):
+		t.Fatal("auxiliary presence did not start")
+	}
+	app.disableAuxiliaryWatch("test")
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("in-flight auxiliary presence was not cancelled")
 	}
 }
 

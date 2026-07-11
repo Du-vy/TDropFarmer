@@ -7,7 +7,9 @@
     "priority_games": ["Smite", "Destiny 2"],
     "fallback_all_campaigns": false,
     "auto_start_campaigns": false,
-    "ignored_games": ["Special Events", "Just Chatting"]
+    "ignored_games": ["Special Events", "Just Chatting"],
+    "auxiliary_watch": false,
+    "auxiliary_lease_minutes": 16
   },
   "features": {
     "claim_bonuses": true,

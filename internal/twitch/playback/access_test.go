@@ -138,14 +138,45 @@ func TestEncodeSpadePayload(t *testing.T) {
 		GameID:      "game-1",
 		GameName:    "Test Game",
 		BroadcastID: "987654321",
-	}, "user_id_123")
+	}, "user_id_123", true)
 	if err != nil {
 		t.Fatalf("encodeSpadePayload returned error: %v", err)
 	}
 	assertSpadePayload(t, encoded)
 }
 
+func TestEncodePresencePayloadOmitsDropMetadata(t *testing.T) {
+	encoded, err := encodeSpadePayload(domain.Streamer{
+		Login:       "test_channel",
+		ID:          "12345",
+		GameID:      "game-1",
+		GameName:    "Test Game",
+		BroadcastID: "987654321",
+	}, "user_id_123", false)
+	if err != nil {
+		t.Fatalf("encodeSpadePayload returned error: %v", err)
+	}
+	props := decodeSpadePayload(t, encoded)
+	if _, ok := props["game"]; ok {
+		t.Fatalf("presence payload contains game: %+v", props)
+	}
+	if _, ok := props["game_id"]; ok {
+		t.Fatalf("presence payload contains game_id: %+v", props)
+	}
+}
+
 func assertSpadePayload(t *testing.T, encoded string) {
+	t.Helper()
+	props := decodeSpadePayload(t, encoded)
+	if props["broadcast_id"] != "987654321" || props["channel_id"] != "12345" || props["channel"] != "test_channel" {
+		t.Fatalf("unexpected channel properties: %+v", props)
+	}
+	if props["game"] != "Test Game" || props["game_id"] != "game-1" || props["player"] != "site" || props["live"] != true || props["user_id"] != "user_id_123" {
+		t.Fatalf("unexpected watch properties: %+v", props)
+	}
+}
+
+func decodeSpadePayload(t *testing.T, encoded string) map[string]any {
 	t.Helper()
 	raw, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
@@ -165,17 +196,11 @@ func assertSpadePayload(t *testing.T, encoded string) {
 	if events[0].Event != "minute-watched" {
 		t.Fatalf("event = %q, want minute-watched", events[0].Event)
 	}
-	props := events[0].Properties
-	if props["broadcast_id"] != "987654321" || props["channel_id"] != "12345" || props["channel"] != "test_channel" {
-		t.Fatalf("unexpected channel properties: %+v", props)
-	}
-	if props["game"] != "Test Game" || props["game_id"] != "game-1" || props["player"] != "site" || props["live"] != true || props["user_id"] != "user_id_123" {
-		t.Fatalf("unexpected watch properties: %+v", props)
-	}
+	return events[0].Properties
 }
 
 func TestSpadePayloadIsFormSafe(t *testing.T) {
-	encoded, err := encodeSpadePayload(domain.Streamer{Login: "test_channel"}, "user_id_123")
+	encoded, err := encodeSpadePayload(domain.Streamer{Login: "test_channel"}, "user_id_123", true)
 	if err != nil {
 		t.Fatalf("encodeSpadePayload returned error: %v", err)
 	}

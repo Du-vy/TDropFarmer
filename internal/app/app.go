@@ -51,12 +51,32 @@ type App struct {
 	watchCreditProgress      map[string]int
 	lastWatchCreditAt        time.Time
 	watchCreditAlerted       bool
+	auxiliaryWatchDisabled   bool
+	auxiliaryWatchCancel     context.CancelFunc
 }
 
 type dropProgressStallState struct {
 	streamer       string
 	progress       map[string]int
 	unchangedPolls int
+}
+
+type watchTelemetrySender interface {
+	SendMinuteWatched(context.Context, domain.Streamer, string) error
+	SendPresence(context.Context, domain.Streamer, string) error
+}
+
+type watchTelemetryState struct {
+	primarySession          string
+	primarySuccessfulPulses int
+	nextPrimaryPulse        time.Time
+	auxiliaryLogin          string
+	auxiliarySession        string
+	auxiliaryLeaseStarted   time.Time
+	nextAuxiliaryPulse      time.Time
+	auxiliaryFailures       int
+	lastAuxiliaryWatch      map[string]time.Time
+	auxiliaryBackoff        map[string]time.Time
 }
 
 type gameStreamDiscoverer interface {
@@ -82,6 +102,13 @@ const (
 	// How long the account may go without a single credited watch minute, while
 	// actively watching a drop streamer, before the watchdog raises an alert.
 	watchCreditStallThreshold = time.Hour
+	watchTelemetryTick        = 5 * time.Second
+	auxiliaryPulseOffset      = 30 * time.Second
+	primaryPulseSafetyMargin  = 5 * time.Second
+	minimumAuxiliaryWindow    = 10 * time.Second
+	primaryPulsesBeforeAux    = 2
+	maxAuxiliaryFailures      = 3
+	auxiliaryFailureBackoff   = 15 * time.Minute
 )
 
 func New(cfg config.Config, logger *slog.Logger, tokenStore auth.TokenStore) *App {
@@ -785,6 +812,7 @@ func (a *App) rotateStalledDropStreamerIfNeeded(eng *engine.Engine, drops []inve
 		)
 	}
 	delete(a.dropProgressStalls, key)
+	a.disableAuxiliaryWatch("drop_progress_stalled")
 
 	a.markStreamerRotationCooldown(streamer)
 
@@ -864,6 +892,11 @@ func (a *App) checkWatchCreditWatchdog(eng *engine.Engine, drops []inventory.Dro
 
 	firstAlert := !a.watchCreditAlerted
 	a.watchCreditAlerted = true
+	a.auxiliaryWatchDisabled = true
+	if a.auxiliaryWatchCancel != nil {
+		a.auxiliaryWatchCancel()
+		a.auxiliaryWatchCancel = nil
+	}
 	if !firstAlert || a.notifier == nil {
 		return
 	}
@@ -1237,34 +1270,254 @@ func (a *App) runMinuteWatched(ctx context.Context, eng *engine.Engine, gqlClien
 	a.logger.Info("watch telemetry configured",
 		slog.String("transport", "spade_direct"),
 		slog.String("endpoint", spadeEndpoint),
+		slog.Bool("auxiliary_watch", a.config.Watch.AuxiliaryWatch),
 	)
 
+	state := watchTelemetryState{
+		lastAuxiliaryWatch: make(map[string]time.Time),
+		auxiliaryBackoff:   make(map[string]time.Time),
+	}
+	ticker := time.NewTicker(watchTelemetryTick)
+	defer ticker.Stop()
+
 	for {
-		nextInterval := randomDuration(55*time.Second, 65*time.Second)
-		timer := time.NewTimer(nextInterval)
+		a.processWatchTelemetry(ctx, eng, watcher, &state, time.Now())
 		select {
 		case <-ctx.Done():
-			timer.Stop()
 			return
-		case <-timer.C:
-			s := a.activeDropStreamer(eng)
-			if s == nil {
-				continue
-			}
-			if err := watcher.SendMinuteWatched(ctx, *s, a.userID); err != nil {
-				a.logger.Warn("minute watched failed",
-					slog.String("streamer", s.Login),
-					slog.String("error", err.Error()),
-				)
-				continue
-			} else {
-				a.logger.Debug("minute watched sent",
-					slog.String("streamer", s.Login),
-					slog.String("game", s.GameName),
-				)
-			}
+		case <-ticker.C:
 		}
 	}
+}
+
+func (a *App) processWatchTelemetry(ctx context.Context, eng *engine.Engine, sender watchTelemetrySender, state *watchTelemetryState, now time.Time) {
+	primary := a.activeDropStreamer(eng)
+	primarySession := streamerSession(primary)
+	if primarySession != state.primarySession {
+		a.pauseAuxiliaryWatch(state, now, "primary_changed")
+		state.primarySession = primarySession
+		state.primarySuccessfulPulses = 0
+		state.nextPrimaryPulse = now
+		if primary != nil && a.logger != nil {
+			a.logger.Info("drop watch session establishing",
+				slog.String("streamer", primary.Login),
+				slog.String("game", primary.GameName),
+				slog.String("broadcast_id", primary.BroadcastID),
+			)
+		}
+	}
+
+	if primary != nil && !now.Before(state.nextPrimaryPulse) {
+		state.nextPrimaryPulse = now.Add(randomDuration(55*time.Second, 65*time.Second))
+		if err := sender.SendMinuteWatched(ctx, *primary, a.userID); err != nil {
+			state.primarySuccessfulPulses = 0
+			a.pauseAuxiliaryWatch(state, now, "primary_failed")
+			a.logger.Warn("minute watched failed",
+				slog.String("streamer", primary.Login),
+				slog.String("error", err.Error()),
+			)
+			return
+		}
+		state.primarySuccessfulPulses++
+		if !state.nextAuxiliaryPulse.IsZero() && state.nextAuxiliaryPulse.Before(now.Add(auxiliaryPulseOffset)) {
+			state.nextAuxiliaryPulse = now.Add(auxiliaryPulseOffset)
+		}
+		a.logger.Debug("minute watched sent",
+			slog.String("streamer", primary.Login),
+			slog.String("game", primary.GameName),
+			slog.Int("session_pulses", state.primarySuccessfulPulses),
+		)
+		return
+	}
+
+	if !a.config.Watch.AuxiliaryWatch || a.isAuxiliaryWatchDisabled() || primary == nil || state.primarySuccessfulPulses < primaryPulsesBeforeAux {
+		a.pauseAuxiliaryWatch(state, now, "not_safe")
+		return
+	}
+
+	lease := time.Duration(a.config.Watch.AuxiliaryLeaseMinutes) * time.Minute
+	current := a.staticStreamerSnapshot(state.auxiliaryLogin)
+	if current == nil || streamerSession(current) != state.auxiliarySession || strings.EqualFold(current.Login, primary.Login) || now.Sub(state.auxiliaryLeaseStarted) >= lease {
+		a.pauseAuxiliaryWatch(state, now, "lease_or_stream_changed")
+		current = nil
+	}
+
+	if current == nil {
+		current = a.selectAuxiliaryStreamer(primary.Login, state.lastAuxiliaryWatch, state.auxiliaryBackoff, now)
+		if current == nil {
+			return
+		}
+		state.auxiliaryLogin = current.Login
+		state.auxiliarySession = streamerSession(current)
+		state.auxiliaryLeaseStarted = now
+		state.nextAuxiliaryPulse = now.Add(auxiliaryPulseOffset)
+		state.auxiliaryFailures = 0
+		a.logger.Info("auxiliary watch selected",
+			slog.String("streamer", current.Login),
+			slog.String("game", current.GameName),
+			slog.Duration("lease", lease),
+		)
+		return
+	}
+
+	if now.Before(state.nextAuxiliaryPulse) {
+		return
+	}
+	requestDeadline := state.nextPrimaryPulse.Add(-primaryPulseSafetyMargin)
+	if requestDeadline.Sub(now) < minimumAuxiliaryWindow {
+		return
+	}
+	requestCtx, finishRequest, ok := a.beginAuxiliaryRequest(ctx, requestDeadline)
+	if !ok {
+		a.pauseAuxiliaryWatch(state, now, "disabled")
+		return
+	}
+	defer finishRequest()
+	state.nextAuxiliaryPulse = now.Add(randomDuration(55*time.Second, 65*time.Second))
+	if err := sender.SendPresence(requestCtx, *current, a.userID); err != nil {
+		state.auxiliaryFailures++
+		a.logger.Warn("auxiliary presence failed",
+			slog.String("streamer", current.Login),
+			slog.Int("consecutive_failures", state.auxiliaryFailures),
+			slog.String("error", err.Error()),
+		)
+		if state.auxiliaryFailures >= maxAuxiliaryFailures {
+			if state.auxiliaryBackoff == nil {
+				state.auxiliaryBackoff = make(map[string]time.Time)
+			}
+			state.auxiliaryBackoff[current.Login] = now.Add(auxiliaryFailureBackoff)
+			a.pauseAuxiliaryWatch(state, now, "repeated_failures")
+		}
+		return
+	}
+	state.auxiliaryFailures = 0
+	a.logger.Debug("auxiliary presence sent",
+		slog.String("streamer", current.Login),
+		slog.String("game", current.GameName),
+	)
+}
+
+func (a *App) pauseAuxiliaryWatch(state *watchTelemetryState, now time.Time, reason string) {
+	if state.auxiliaryLogin == "" {
+		return
+	}
+	if state.lastAuxiliaryWatch == nil {
+		state.lastAuxiliaryWatch = make(map[string]time.Time)
+	}
+	state.lastAuxiliaryWatch[state.auxiliaryLogin] = now
+	if a.logger != nil {
+		a.logger.Info("auxiliary watch paused",
+			slog.String("streamer", state.auxiliaryLogin),
+			slog.String("reason", reason),
+		)
+	}
+	state.auxiliaryLogin = ""
+	state.auxiliarySession = ""
+	state.auxiliaryLeaseStarted = time.Time{}
+	state.nextAuxiliaryPulse = time.Time{}
+	state.auxiliaryFailures = 0
+}
+
+func streamerSession(streamer *domain.Streamer) string {
+	if streamer == nil {
+		return ""
+	}
+	return strings.ToLower(streamer.Login) + "\x00" + streamer.BroadcastID + "\x00" + streamer.GameID
+}
+
+func (a *App) staticStreamerSnapshot(login string) *domain.Streamer {
+	if login == "" {
+		return nil
+	}
+	a.streamersMu.RLock()
+	defer a.streamersMu.RUnlock()
+	for _, streamer := range a.staticStreamers {
+		if strings.EqualFold(streamer.Login, login) && streamer.BroadcastID != "" {
+			copy := streamer
+			return &copy
+		}
+	}
+	return nil
+}
+
+func (a *App) selectAuxiliaryStreamer(primaryLogin string, lastWatched, backoff map[string]time.Time, now time.Time) *domain.Streamer {
+	activeGames := a.activeGamesSnapshot()
+	isActiveDropGame := func(gameName string) bool {
+		for _, activeGame := range activeGames {
+			if strings.EqualFold(gameName, activeGame) {
+				return true
+			}
+		}
+		return false
+	}
+
+	a.streamersMu.RLock()
+	defer a.streamersMu.RUnlock()
+
+	var selected *domain.Streamer
+	for _, streamer := range a.staticStreamers {
+		if streamer.BroadcastID == "" || streamer.GameName == "" || strings.EqualFold(streamer.Login, primaryLogin) || isActiveDropGame(streamer.GameName) {
+			continue
+		}
+		if until, blocked := backoff[streamer.Login]; blocked && now.Before(until) {
+			continue
+		}
+		if selected != nil {
+			selectedAt, selectedSeen := lastWatched[selected.Login]
+			candidateAt, candidateSeen := lastWatched[streamer.Login]
+			if !selectedSeen && !candidateSeen {
+				continue
+			}
+			if !selectedSeen && candidateSeen {
+				continue
+			}
+			if candidateSeen && !candidateAt.Before(selectedAt) {
+				continue
+			}
+		}
+		copy := streamer
+		selected = &copy
+	}
+	return selected
+}
+
+func (a *App) isAuxiliaryWatchDisabled() bool {
+	a.watchCreditMu.Lock()
+	defer a.watchCreditMu.Unlock()
+	return a.auxiliaryWatchDisabled
+}
+
+func (a *App) disableAuxiliaryWatch(reason string) {
+	a.watchCreditMu.Lock()
+	alreadyDisabled := a.auxiliaryWatchDisabled
+	a.auxiliaryWatchDisabled = true
+	cancel := a.auxiliaryWatchCancel
+	a.auxiliaryWatchCancel = nil
+	a.watchCreditMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if !alreadyDisabled && a.logger != nil {
+		a.logger.Warn("auxiliary watch disabled for process lifetime", slog.String("reason", reason))
+	}
+}
+
+func (a *App) beginAuxiliaryRequest(ctx context.Context, deadline time.Time) (context.Context, func(), bool) {
+	a.watchCreditMu.Lock()
+	defer a.watchCreditMu.Unlock()
+	if a.auxiliaryWatchDisabled {
+		return nil, func() {}, false
+	}
+
+	requestCtx, cancel := context.WithDeadline(ctx, deadline)
+	a.auxiliaryWatchCancel = cancel
+	finish := func() {
+		cancel()
+		a.watchCreditMu.Lock()
+		a.auxiliaryWatchCancel = nil
+		a.watchCreditMu.Unlock()
+	}
+	return requestCtx, finish, true
 }
 
 func (a *App) pollChannelPoints(ctx context.Context, eng *engine.Engine, loader channelpoints.ContextLoader) {

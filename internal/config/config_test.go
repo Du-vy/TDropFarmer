@@ -36,10 +36,13 @@ func TestDefaultsAndNormalize(t *testing.T) {
 	if !cfg.Features.ClaimBonusesEnabled() {
 		t.Fatalf("claim bonuses default should be enabled")
 	}
+	if cfg.Watch.AuxiliaryWatch {
+		t.Fatal("auxiliary watch must be opt-in")
+	}
+	if cfg.Watch.AuxiliaryLeaseMinutes != 16 {
+		t.Fatalf("auxiliary lease = %d, want 16", cfg.Watch.AuxiliaryLeaseMinutes)
+	}
 }
-
-
-
 
 func TestAuthFallbackDefaults(t *testing.T) {
 	cfg := Config{
@@ -59,5 +62,23 @@ func TestAuthFallbackDefaults(t *testing.T) {
 
 	if len(cfg.Auth.Scopes) == 0 {
 		t.Fatalf("expected default scopes to be populated")
+	}
+}
+
+func TestValidateAuxiliaryWatchLease(t *testing.T) {
+	cfg := Config{
+		Account: AccountConfig{Username: "my_user"},
+		Auth:    AuthConfig{ClientID: "example-client-id"},
+		Watch: WatchConfig{
+			TickSeconds:           20,
+			AuxiliaryWatch:        true,
+			AuxiliaryLeaseMinutes: 9,
+		},
+		Storage: StorageConfig{Path: "./data"},
+		Logging: LoggingConfig{Level: "info", Format: "text"},
+	}
+
+	if err := Validate(cfg); err == nil {
+		t.Fatal("expected auxiliary lease shorter than 10 minutes to fail validation")
 	}
 }

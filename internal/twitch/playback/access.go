@@ -108,6 +108,14 @@ func (w *Watcher) SetSpadeURL(target string) {
 }
 
 func (w *Watcher) SendMinuteWatched(ctx context.Context, streamer domain.Streamer, userID string) error {
+	return w.sendWatched(ctx, streamer, userID, true)
+}
+
+func (w *Watcher) SendPresence(ctx context.Context, streamer domain.Streamer, userID string) error {
+	return w.sendWatched(ctx, streamer, userID, false)
+}
+
+func (w *Watcher) sendWatched(ctx context.Context, streamer domain.Streamer, userID string, includeDropMetadata bool) error {
 	token, err := w.fetcher.Fetch(ctx, streamer.Login)
 	if err != nil {
 		return fmt.Errorf("fetch playback token: %w", err)
@@ -181,15 +189,15 @@ func (w *Watcher) SendMinuteWatched(ctx context.Context, streamer domain.Streame
 		return fmt.Errorf("head media segment: %w", err)
 	}
 
-	if err := w.sendSpadeEvent(ctx, streamer, userID); err != nil {
+	if err := w.sendSpadeEvent(ctx, streamer, userID, includeDropMetadata); err != nil {
 		return fmt.Errorf("send watch event: %w", err)
 	}
 
 	return nil
 }
 
-func (w *Watcher) sendSpadeEvent(ctx context.Context, streamer domain.Streamer, userID string) error {
-	encoded, err := encodeSpadePayload(streamer, userID)
+func (w *Watcher) sendSpadeEvent(ctx context.Context, streamer domain.Streamer, userID string, includeDropMetadata bool) error {
+	encoded, err := encodeSpadePayload(streamer, userID, includeDropMetadata)
 	if err != nil {
 		return err
 	}
@@ -251,20 +259,23 @@ func (w *Watcher) httpHead(ctx context.Context, target string) error {
 	return nil
 }
 
-func encodeSpadePayload(streamer domain.Streamer, userID string) (string, error) {
+func encodeSpadePayload(streamer domain.Streamer, userID string, includeDropMetadata bool) (string, error) {
+	properties := map[string]any{
+		"broadcast_id": streamer.BroadcastID,
+		"channel_id":   streamer.ID,
+		"player":       "site",
+		"user_id":      userID,
+		"live":         true,
+		"channel":      streamer.Login,
+	}
+	if includeDropMetadata {
+		properties["game"] = streamer.GameName
+		properties["game_id"] = streamer.GameID
+	}
 	payload := []map[string]any{
 		{
-			"event": "minute-watched",
-			"properties": map[string]any{
-				"broadcast_id": streamer.BroadcastID,
-				"channel_id":   streamer.ID,
-				"player":       "site",
-				"user_id":      userID,
-				"live":         true,
-				"channel":      streamer.Login,
-				"game":         streamer.GameName,
-				"game_id":      streamer.GameID,
-			},
+			"event":      "minute-watched",
+			"properties": properties,
 		},
 	}
 
