@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -100,12 +101,9 @@ func TestWatcher_SendMinuteWatched(t *testing.T) {
 	defer server.Close()
 
 	oldUsherURL := usherBaseURL
-	oldSpadeURL := spadeURL
 	usherBaseURL = server.URL
-	spadeURL = server.URL + "/track"
 	defer func() {
 		usherBaseURL = oldUsherURL
-		spadeURL = oldSpadeURL
 	}()
 
 	tokenClient := mockGQLClient{
@@ -116,6 +114,7 @@ func TestWatcher_SendMinuteWatched(t *testing.T) {
 	fetcher := TokenFetcher{Client: tokenClient}
 
 	watcher := NewWatcher(fetcher)
+	watcher.SetSpadeURL(server.URL + "/track")
 	err := watcher.SendMinuteWatched(context.Background(), domain.Streamer{
 		Login:       "test_channel",
 		ID:          "12345",
@@ -187,5 +186,39 @@ func TestSpadePayloadIsFormSafe(t *testing.T) {
 	}
 	if parsed.Get("data") != encoded {
 		t.Fatal("base64 payload changed during form encoding")
+	}
+}
+
+func TestDiscoverSpadeURL(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			fmt.Fprintf(w, `<script src="%s/config/settings.test.js"></script>`, server.URL)
+		case "/config/settings.test.js":
+			fmt.Fprintf(w, `window.__settings={"spade_url":"%s/track"};`, server.URL)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	got, err := discoverSpadeURL(context.Background(), server.Client(), server.URL+"/")
+	if err != nil {
+		t.Fatalf("discoverSpadeURL returned error: %v", err)
+	}
+	if want := server.URL + "/track"; got != want {
+		t.Fatalf("Spade URL = %q, want %q", got, want)
+	}
+}
+
+func TestDiscoverSpadeURLRejectsMissingSettingsScript(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("no settings here"))
+	}))
+	defer server.Close()
+
+	if _, err := discoverSpadeURL(context.Background(), server.Client(), server.URL); err == nil {
+		t.Fatal("discoverSpadeURL returned nil error without a settings script")
 	}
 }

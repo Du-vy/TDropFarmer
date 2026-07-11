@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -16,12 +17,10 @@ import (
 	"github.com/Du-vy/TDropFarmer/internal/twitch/gql"
 )
 
-var (
-	usherBaseURL = "https://usher.ttvnw.net/api/channel/hls"
-	spadeURL     = "https://spade.twitch.tv/track"
-)
+var usherBaseURL = "https://usher.ttvnw.net/api/channel/hls"
 
 const (
+	DefaultSpadeURL = "https://spade.twitch.tv/track"
 
 	// Raw GQL query instead of persisted query hash.
 	// Persisted query hashes get rotated by Twitch periodically; using the
@@ -89,14 +88,22 @@ func (t AccessToken) UsherURL(login string) string {
 }
 
 type Watcher struct {
-	fetcher TokenFetcher
-	client  *http.Client
+	fetcher  TokenFetcher
+	client   *http.Client
+	spadeURL string
 }
 
 func NewWatcher(fetcher TokenFetcher) *Watcher {
 	return &Watcher{
-		fetcher: fetcher,
-		client:  &http.Client{Timeout: 20 * time.Second},
+		fetcher:  fetcher,
+		client:   &http.Client{Timeout: 20 * time.Second},
+		spadeURL: DefaultSpadeURL,
+	}
+}
+
+func (w *Watcher) SetSpadeURL(target string) {
+	if target != "" {
+		w.spadeURL = target
 	}
 }
 
@@ -189,7 +196,7 @@ func (w *Watcher) sendSpadeEvent(ctx context.Context, streamer domain.Streamer, 
 
 	form := url.Values{}
 	form.Set("data", encoded)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, spadeURL, strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.spadeURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
 	}
@@ -267,6 +274,62 @@ func encodeSpadePayload(streamer domain.Streamer, userID string) (string, error)
 	}
 
 	return base64.StdEncoding.EncodeToString(raw), nil
+}
+
+func DiscoverSpadeURL(ctx context.Context) (string, error) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	return discoverSpadeURL(ctx, client, "https://www.twitch.tv/")
+}
+
+func discoverSpadeURL(ctx context.Context, client *http.Client, twitchURL string) (string, error) {
+	home, err := fetchText(ctx, client, twitchURL)
+	if err != nil {
+		return "", fmt.Errorf("fetch Twitch page: %w", err)
+	}
+
+	settingsPattern := regexp.MustCompile(`https?://[^"'\\\s]+/config/settings[^"'\\\s]*?\.js`)
+	settingsURL := settingsPattern.FindString(home)
+	if settingsURL == "" {
+		return "", fmt.Errorf("settings script URL not found")
+	}
+
+	settings, err := fetchText(ctx, client, settingsURL)
+	if err != nil {
+		return "", fmt.Errorf("fetch Twitch settings: %w", err)
+	}
+
+	endpointPattern := regexp.MustCompile(`"(?:spade|beacon)_url"\s*:\s*"([^"]+)"`)
+	matches := endpointPattern.FindStringSubmatch(settings)
+	if len(matches) < 2 {
+		return "", fmt.Errorf("Spade endpoint not found in Twitch settings")
+	}
+
+	endpoint, err := url.Parse(matches[1])
+	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" {
+		return "", fmt.Errorf("invalid Spade endpoint %q", matches[1])
+	}
+	return endpoint.String(), nil
+}
+
+func fetchText(ctx context.Context, client *http.Client, target string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", userAgent())
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("http status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
 }
 
 func nonEmptyLines(text string) []string {

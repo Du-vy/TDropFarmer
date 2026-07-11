@@ -1227,8 +1227,17 @@ func (a *App) runMinuteWatched(ctx context.Context, eng *engine.Engine, gqlClien
 	// generate, so we use the Android App Client ID which works without them.
 	fetcher := playback.TokenFetcher{Client: gqlClient}
 	watcher := playback.NewWatcher(fetcher)
+	spadeEndpoint, err := playback.DiscoverSpadeURL(ctx)
+	if err != nil {
+		spadeEndpoint = playback.DefaultSpadeURL
+		a.logger.Warn("spade endpoint discovery failed; using fallback", slog.String("error", err.Error()))
+	}
+	watcher.SetSpadeURL(spadeEndpoint)
 
-	a.logger.Info("watch telemetry configured", slog.String("transport", "spade_direct"))
+	a.logger.Info("watch telemetry configured",
+		slog.String("transport", "spade_direct"),
+		slog.String("endpoint", spadeEndpoint),
+	)
 
 	for {
 		nextInterval := randomDuration(55*time.Second, 65*time.Second)
