@@ -298,15 +298,22 @@ func discoverSpadeURL(ctx context.Context, client *http.Client, twitchURL string
 		return "", fmt.Errorf("fetch Twitch settings: %w", err)
 	}
 
-	endpointPattern := regexp.MustCompile(`"(?:spade|beacon)_url"\s*:\s*"([^"]+)"`)
-	matches := endpointPattern.FindStringSubmatch(settings)
-	if len(matches) < 2 {
+	endpointValue := ""
+	for _, key := range []string{"spade", "beacon"} {
+		endpointPattern := regexp.MustCompile(fmt.Sprintf(`"%s_url"\s*:\s*"([^"]+)"`, key))
+		matches := endpointPattern.FindStringSubmatch(settings)
+		if len(matches) >= 2 {
+			endpointValue = matches[1]
+			break
+		}
+	}
+	if endpointValue == "" {
 		return "", fmt.Errorf("Spade endpoint not found in Twitch settings")
 	}
 
-	endpoint, err := url.Parse(matches[1])
+	endpoint, err := url.Parse(endpointValue)
 	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" {
-		return "", fmt.Errorf("invalid Spade endpoint %q", matches[1])
+		return "", fmt.Errorf("invalid Spade endpoint %q", endpointValue)
 	}
 	return endpoint.String(), nil
 }

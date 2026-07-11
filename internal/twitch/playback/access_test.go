@@ -196,7 +196,7 @@ func TestDiscoverSpadeURL(t *testing.T) {
 		case "/":
 			fmt.Fprintf(w, `<script src="%s/config/settings.test.js"></script>`, server.URL)
 		case "/config/settings.test.js":
-			fmt.Fprintf(w, `window.__settings={"spade_url":"%s/track"};`, server.URL)
+			fmt.Fprintf(w, `window.__settings={"beacon_url":"%s/beacon","spade_url":"%s/spade"};`, server.URL, server.URL)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -207,7 +207,7 @@ func TestDiscoverSpadeURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("discoverSpadeURL returned error: %v", err)
 	}
-	if want := server.URL + "/track"; got != want {
+	if want := server.URL + "/spade"; got != want {
 		t.Fatalf("Spade URL = %q, want %q", got, want)
 	}
 }
