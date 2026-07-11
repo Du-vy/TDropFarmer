@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/Du-vy/TDropFarmer/internal/twitch/profile"
 )
 
 func TestDo(t *testing.T) {
@@ -18,6 +20,9 @@ func TestDo(t *testing.T) {
 		}
 		if got := r.Header.Get("Authorization"); got != "OAuth access-token" {
 			t.Fatalf("Authorization = %q, want OAuth access-token", got)
+		}
+		if got := r.Header.Get("User-Agent"); got != profile.MobileAppUserAgent {
+			t.Fatalf("User-Agent = %q, want %q", got, profile.MobileAppUserAgent)
 		}
 		var request Request
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Du-vy/TDropFarmer/internal/domain"
+	"github.com/Du-vy/TDropFarmer/internal/twitch/profile"
 )
 
 const defaultHelixEndpoint = "https://api.twitch.tv/helix"
@@ -111,6 +112,7 @@ func (c Client) doJSON(req *http.Request, target any) error {
 	req.Header.Set("Client-Id", c.ClientID)
 	req.Header.Set("Authorization", "Bearer "+c.AccessToken)
 	req.Header.Set("Accept", "application/json")
+	profile.ApplyMobileApp(req)
 
 	client := c.HTTPClient
 	if client == nil {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Du-vy/TDropFarmer/internal/store"
+	"github.com/Du-vy/TDropFarmer/internal/twitch/profile"
 )
 
 const deviceGrantType = "urn:ietf:params:oauth:grant-type:device_code"
@@ -234,6 +235,7 @@ func (f DeviceFlow) postForm(ctx context.Context, endpoint string, values url.Va
 }
 
 func (f DeviceFlow) doJSON(req *http.Request, target any) error {
+	profile.ApplyMobileApp(req)
 	client := f.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: 20 * time.Second}

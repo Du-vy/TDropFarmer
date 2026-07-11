@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Du-vy/TDropFarmer/internal/store"
+	"github.com/Du-vy/TDropFarmer/internal/twitch/profile"
 )
 
 type memoryTokenStore struct {
@@ -33,6 +34,7 @@ func (s *memoryTokenStore) Save(token store.Token) error {
 func TestDeviceFlowLogin(t *testing.T) {
 	tokenPolls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertMobileUserAgent(t, r)
 		switch r.URL.Path {
 		case "/device":
 			assertFormValue(t, r, "client_id", "client-id")
@@ -102,6 +104,7 @@ func TestDeviceFlowLogin(t *testing.T) {
 
 func TestDeviceFlowValidate(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertMobileUserAgent(t, r)
 		if r.URL.Path != "/validate" {
 			http.NotFound(w, r)
 			return
@@ -131,6 +134,7 @@ func TestDeviceFlowValidate(t *testing.T) {
 
 func TestDeviceFlowRefresh(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertMobileUserAgent(t, r)
 		assertFormValue(t, r, "client_id", "client-id")
 		assertFormValue(t, r, "grant_type", "refresh_token")
 		assertFormValue(t, r, "refresh_token", "old-refresh-token")
@@ -150,6 +154,13 @@ func TestDeviceFlowRefresh(t *testing.T) {
 	}
 	if token.AccessToken != "new-access-token" {
 		t.Fatalf("access token = %q, want new-access-token", token.AccessToken)
+	}
+}
+
+func assertMobileUserAgent(t *testing.T, r *http.Request) {
+	t.Helper()
+	if got := r.Header.Get("User-Agent"); got != profile.MobileAppUserAgent {
+		t.Fatalf("User-Agent = %q, want %q", got, profile.MobileAppUserAgent)
 	}
 }
 

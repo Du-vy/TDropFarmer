@@ -14,6 +14,7 @@ import (
 
 	"github.com/Du-vy/TDropFarmer/internal/domain"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/gql"
+	"github.com/Du-vy/TDropFarmer/internal/twitch/profile"
 )
 
 type mockGQLClient struct {
@@ -64,6 +65,9 @@ func TestFetch(t *testing.T) {
 func TestWatcher_SendMinuteWatched(t *testing.T) {
 	var spadePayload string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("User-Agent"); got != profile.WebPlayerUserAgent {
+			t.Errorf("User-Agent = %q, want %q", got, profile.WebPlayerUserAgent)
+		}
 		switch {
 		case strings.Contains(r.URL.Path, "test_channel.m3u8"):
 			w.Write([]byte(`#EXTM3U
@@ -217,6 +221,9 @@ func TestSpadePayloadIsFormSafe(t *testing.T) {
 func TestDiscoverSpadeURL(t *testing.T) {
 	var server *httptest.Server
 	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("User-Agent"); got != profile.WebPlayerUserAgent {
+			t.Errorf("User-Agent = %q, want %q", got, profile.WebPlayerUserAgent)
+		}
 		switch r.URL.Path {
 		case "/":
 			fmt.Fprintf(w, `<script src="%s/config/settings.test.js"></script>`, server.URL)

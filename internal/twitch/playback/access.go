@@ -15,6 +15,7 @@ import (
 
 	"github.com/Du-vy/TDropFarmer/internal/domain"
 	"github.com/Du-vy/TDropFarmer/internal/twitch/gql"
+	"github.com/Du-vy/TDropFarmer/internal/twitch/profile"
 )
 
 var usherBaseURL = "https://usher.ttvnw.net/api/channel/hls"
@@ -209,7 +210,7 @@ func (w *Watcher) sendSpadeEvent(ctx context.Context, streamer domain.Streamer, 
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", userAgent())
+	profile.ApplyWebPlayer(req)
 	resp, err := w.client.Do(req)
 	if err != nil {
 		return err
@@ -226,7 +227,7 @@ func (w *Watcher) httpGet(ctx context.Context, target string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", userAgent())
+	profile.ApplyWebPlayer(req)
 	resp, err := w.client.Do(req)
 	if err != nil {
 		return "", err
@@ -247,7 +248,7 @@ func (w *Watcher) httpHead(ctx context.Context, target string) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", userAgent())
+	profile.ApplyWebPlayer(req)
 	resp, err := w.client.Do(req)
 	if err != nil {
 		return err
@@ -334,7 +335,7 @@ func fetchText(ctx context.Context, client *http.Client, target string) (string,
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", userAgent())
+	profile.ApplyWebPlayer(req)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -360,8 +361,4 @@ func nonEmptyLines(text string) []string {
 		}
 	}
 	return result
-}
-
-func userAgent() string {
-	return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
 }

@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/Du-vy/TDropFarmer/internal/twitch/profile"
 )
 
 const defaultEndpoint = "https://gql.twitch.tv/gql"
@@ -62,6 +64,7 @@ func (c Client) Do(ctx context.Context, request Request) (Response, error) {
 	if c.AccessToken != "" {
 		req.Header.Set("Authorization", "OAuth "+c.AccessToken)
 	}
+	profile.ApplyMobileApp(req)
 
 	client := c.HTTPClient
 	if client == nil {
