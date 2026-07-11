@@ -50,7 +50,7 @@ func ApplyDefaults(cfg *Config) {
 	}
 
 	if cfg.Watch.IgnoredGames == nil {
-		cfg.Watch.IgnoredGames = []string{"Special Events", "Just Chatting"}
+		cfg.Watch.IgnoredGames = []string{"Special Events", "Just Chatting", "Sports", "Music"}
 	}
 
 	if cfg.Features.ClaimBonuses == nil {
