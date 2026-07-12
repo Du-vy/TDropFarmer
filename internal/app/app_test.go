@@ -628,6 +628,81 @@ func TestDiscoverGamesStreamersPassesWatchCampaignIDs(t *testing.T) {
 	}
 }
 
+func TestFarmingCampaignForGameIsStableAcrossDropOrder(t *testing.T) {
+	drops := []inventory.Drop{
+		{ID: "radiant-drop", Name: "Radiant Wilds Chest", CampaignID: "radiant", CampaignName: "Radiant Wilds", GameName: "Albion Online", RequiredMinutes: 180, IsEarnable: true},
+		{ID: "noble-drop", Name: "Noble Community Chest", CampaignID: "noble", CampaignName: "AOCP Knight", GameName: "Albion Online", RequiredMinutes: 240, IsEarnable: true},
+	}
+	app := &App{lastDrops: drops}
+
+	campaignName, campaignKey, _, dropList := app.farmingCampaignForGame("albion online")
+	if campaignKey != "noble\x00radiant" {
+		t.Fatalf("expected stable campaign key, got %q", campaignKey)
+	}
+	if campaignName != "AOCP Knight, Radiant Wilds" {
+		t.Fatalf("expected deterministic campaign names, got %q", campaignName)
+	}
+	if len(dropList) != 2 {
+		t.Fatalf("expected both active drops, got %v", dropList)
+	}
+	if !app.setCurrentFarmingCampaign(campaignKey) {
+		t.Fatal("expected first campaign set to be treated as changed")
+	}
+
+	app.lastDrops = []inventory.Drop{drops[1], drops[0]}
+	_, reorderedKey, _, _ := app.farmingCampaignForGame("Albion Online")
+	if reorderedKey != campaignKey {
+		t.Fatalf("expected reordering not to change campaign key: %q != %q", reorderedKey, campaignKey)
+	}
+	if app.setCurrentFarmingCampaign(reorderedKey) {
+		t.Fatal("expected reordering not to trigger a campaign change")
+	}
+}
+
+func TestFarmingCampaignForGameDetectsActiveCampaignSetChange(t *testing.T) {
+	app := &App{lastDrops: []inventory.Drop{
+		{ID: "a-drop", Name: "A Drop", CampaignID: "campaign-a", GameName: "Game", RequiredMinutes: 30, IsEarnable: true},
+		{ID: "b-drop", Name: "B Drop", CampaignID: "campaign-b", GameName: "Game", RequiredMinutes: 60, IsEarnable: true},
+	}}
+
+	_, initialKey, _, _ := app.farmingCampaignForGame("Game")
+	if !app.setCurrentFarmingCampaign(initialKey) {
+		t.Fatal("expected initial campaign set to be treated as changed")
+	}
+
+	app.lastDrops[0].IsClaimed = true
+	app.lastDrops[0].IsEarnable = false
+	_, updatedKey, _, _ := app.farmingCampaignForGame("Game")
+	if updatedKey != "campaign-b" {
+		t.Fatalf("expected only remaining active campaign, got %q", updatedKey)
+	}
+	if !app.setCurrentFarmingCampaign(updatedKey) {
+		t.Fatal("expected a real active campaign set change to be detected")
+	}
+}
+
+func TestFarmingCampaignForGameIgnoresCompletedInventoryCampaign(t *testing.T) {
+	app := &App{
+		lastDrops: []inventory.Drop{
+			{ID: "old-drop", Name: "Old Drop", CampaignID: "old", CampaignName: "Old Campaign", GameName: "Game", RequiredMinutes: 30, IsClaimed: true},
+		},
+		lastActiveCampaignDrops: []inventory.Drop{
+			{ID: "new-drop", Name: "New Drop", CampaignID: "new", CampaignName: "New Campaign", GameName: "Game", GameImageURL: "https://example.com/game.png", RequiredMinutes: 60, IsEarnable: true},
+		},
+	}
+
+	campaignName, campaignKey, imageURL, dropList := app.farmingCampaignForGame("Game")
+	if campaignKey != "new" || campaignName != "New Campaign" {
+		t.Fatalf("expected only new active campaign, got name=%q key=%q", campaignName, campaignKey)
+	}
+	if imageURL != "https://example.com/game.png" {
+		t.Fatalf("expected active campaign image, got %q", imageURL)
+	}
+	if len(dropList) != 1 || !strings.Contains(dropList[0], "New Drop") {
+		t.Fatalf("expected only the new campaign drop, got %v", dropList)
+	}
+}
+
 func TestDiscoverGamesStreamersKeepsStickyGameWithinSameBucket(t *testing.T) {
 	app := &App{
 		config: config.Config{

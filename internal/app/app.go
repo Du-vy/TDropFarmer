@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -312,9 +313,9 @@ func (a *App) Run(ctx context.Context) error {
 
 				s := a.findCombinedStreamer(event.Streamer)
 				if s != nil && s.GameName != "" {
-					campaignName, campaignID, gameImageURL, dropList := a.farmingCampaignForGame(s.GameName)
-					if campaignID != "" {
-						campaignChanged := a.setCurrentFarmingCampaign(campaignID)
+					campaignName, campaignKey, gameImageURL, dropList := a.farmingCampaignForGame(s.GameName)
+					if campaignKey != "" {
+						campaignChanged := a.setCurrentFarmingCampaign(campaignKey)
 						if notifier != nil && campaignChanged {
 
 							var description string
@@ -602,10 +603,13 @@ func (a *App) activeGamesSnapshot() []string {
 func (a *App) activeCampaignIDsForGame(gameName string) []string {
 	a.dropsMu.RLock()
 	defer a.dropsMu.RUnlock()
+	return collectActiveCampaignIDsForGame(gameName, a.lastDrops, a.lastActiveCampaignDrops)
+}
 
+func collectActiveCampaignIDsForGame(gameName string, dropSets ...[]inventory.Drop) []string {
 	seen := make(map[string]bool)
 	var campaignIDs []string
-	collect := func(drops []inventory.Drop) {
+	for _, drops := range dropSets {
 		for _, drop := range drops {
 			if !strings.EqualFold(drop.GameName, gameName) || drop.CampaignID == "" || drop.IsClaimed || !drop.IsEarnable || drop.RequiredMinutes <= 0 || seen[drop.CampaignID] {
 				continue
@@ -614,8 +618,7 @@ func (a *App) activeCampaignIDsForGame(gameName string) []string {
 			campaignIDs = append(campaignIDs, drop.CampaignID)
 		}
 	}
-	collect(a.lastDrops)
-	collect(a.lastActiveCampaignDrops)
+	sort.Strings(campaignIDs)
 	return campaignIDs
 }
 
@@ -993,66 +996,85 @@ func (a *App) currentFarmingCampaignSnapshot() string {
 	return a.currentFarmingCampaign
 }
 
-func (a *App) farmingCampaignForGame(gameName string) (campaignName, campaignID, gameImageURL string, dropList []string) {
+func (a *App) farmingCampaignForGame(gameName string) (campaignName, campaignKey, gameImageURL string, dropList []string) {
 	a.dropsMu.RLock()
 	defer a.dropsMu.RUnlock()
 
+	campaignIDs := collectActiveCampaignIDsForGame(gameName, a.lastDrops, a.lastActiveCampaignDrops)
+	if len(campaignIDs) == 0 {
+		return "", "", "", nil
+	}
+	campaignKey = strings.Join(campaignIDs, "\x00")
+
+	activeCampaigns := make(map[string]bool, len(campaignIDs))
+	for _, campaignID := range campaignIDs {
+		activeCampaigns[campaignID] = true
+	}
+
+	type campaignDetails struct {
+		name         string
+		gameImageURL string
+	}
+	detailsByID := make(map[string]campaignDetails, len(campaignIDs))
+	collectDetails := func(drops []inventory.Drop) {
+		for _, drop := range drops {
+			if !strings.EqualFold(drop.GameName, gameName) || !activeCampaigns[drop.CampaignID] {
+				continue
+			}
+			details := detailsByID[drop.CampaignID]
+			if details.name == "" {
+				details.name = drop.CampaignName
+			}
+			if details.gameImageURL == "" {
+				details.gameImageURL = drop.GameImageURL
+			}
+			detailsByID[drop.CampaignID] = details
+		}
+	}
+	collectDetails(a.lastDrops)
+	collectDetails(a.lastActiveCampaignDrops)
+
+	campaignNames := make([]string, 0, len(campaignIDs))
+	for _, campaignID := range campaignIDs {
+		details := detailsByID[campaignID]
+		name := details.name
+		if name == "" {
+			name = campaignID
+		}
+		campaignNames = append(campaignNames, name)
+		if gameImageURL == "" {
+			gameImageURL = details.gameImageURL
+		}
+	}
+	campaignName = strings.Join(campaignNames, ", ")
+
 	seenDrops := make(map[string]bool)
-	for _, d := range a.lastDrops {
-		if !strings.EqualFold(d.GameName, gameName) {
-			continue
-		}
-		if campaignName == "" {
-			campaignName = d.CampaignName
-			if campaignName == "" {
-				campaignName = d.CampaignID
+	appendDrops := func(drops []inventory.Drop) {
+		for _, drop := range drops {
+			if !strings.EqualFold(drop.GameName, gameName) || !activeCampaigns[drop.CampaignID] {
+				continue
 			}
-			campaignID = d.CampaignID
-			gameImageURL = d.GameImageURL
-		}
-		if seenDrops[d.ID] {
-			continue
-		}
-		seenDrops[d.ID] = true
-		status := fmt.Sprintf("%d/%d min", d.CurrentMinutes, d.RequiredMinutes)
-		if d.IsClaimed {
-			status = "Claimed"
-		} else if d.IsClaimable {
-			status = "Claimable"
-		}
-		dropList = append(dropList, fmt.Sprintf("• **%s** (%s)", d.Name, status))
-	}
-
-	if campaignID != "" {
-		return campaignName, campaignID, gameImageURL, dropList
-	}
-
-	for _, d := range a.lastActiveCampaignDrops {
-		if !strings.EqualFold(d.GameName, gameName) {
-			continue
-		}
-		if campaignName == "" {
-			campaignName = d.CampaignName
-			if campaignName == "" {
-				campaignName = d.CampaignID
+			dropKey := drop.ID
+			if dropKey == "" {
+				dropKey = drop.CampaignID + "\x00" + drop.Name
 			}
-			campaignID = d.CampaignID
-			gameImageURL = d.GameImageURL
+			if seenDrops[dropKey] {
+				continue
+			}
+			seenDrops[dropKey] = true
+			status := fmt.Sprintf("%d/%d min", drop.CurrentMinutes, drop.RequiredMinutes)
+			if drop.IsClaimed {
+				status = "Claimed"
+			} else if drop.IsClaimable {
+				status = "Claimable"
+			}
+			dropList = append(dropList, fmt.Sprintf("• **%s** (%s)", drop.Name, status))
 		}
-		if seenDrops[d.ID] {
-			continue
-		}
-		seenDrops[d.ID] = true
-		status := fmt.Sprintf("%d/%d min", d.CurrentMinutes, d.RequiredMinutes)
-		if d.IsClaimed {
-			status = "Claimed"
-		} else if d.IsClaimable {
-			status = "Claimable"
-		}
-		dropList = append(dropList, fmt.Sprintf("• **%s** (%s)", d.Name, status))
 	}
+	appendDrops(a.lastDrops)
+	appendDrops(a.lastActiveCampaignDrops)
 
-	return campaignName, campaignID, gameImageURL, dropList
+	return campaignName, campaignKey, gameImageURL, dropList
 }
 
 func (a *App) discoverGamesStreamers(ctx context.Context, client gameStreamDiscoverer, stickyGameName string) ([]domain.Streamer, error) {
