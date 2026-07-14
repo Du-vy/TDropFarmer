@@ -3,6 +3,7 @@ package gql
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -54,6 +55,28 @@ func TestDoGraphQLError(t *testing.T) {
 	client := Client{Endpoint: server.URL}
 	if _, err := client.Do(context.Background(), Request{Query: "query Bad { bad }"}); err == nil {
 		t.Fatalf("Do returned nil error, want graphql error")
+	}
+}
+
+func TestIsPersistedQueryNotFound(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "message", err: Error{Message: "PersistedQueryNotFound"}, want: true},
+		{name: "extension code", err: Error{Message: "query missing", Extra: map[string]any{"code": "PERSISTED_QUERY_NOT_FOUND"}}, want: true},
+		{name: "wrapped", err: fmt.Errorf("directory request: %w", Error{Message: "PersistedQueryNotFound"}), want: true},
+		{name: "other graphql error", err: Error{Message: "service error"}, want: false},
+		{name: "transport error", err: fmt.Errorf("request timeout"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsPersistedQueryNotFound(tt.err); got != tt.want {
+				t.Fatalf("IsPersistedQueryNotFound(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
 	}
 }
 

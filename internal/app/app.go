@@ -110,6 +110,7 @@ const (
 	primaryPulsesBeforeAux    = 2
 	maxAuxiliaryFailures      = 3
 	auxiliaryFailureBackoff   = 15 * time.Minute
+	channelPointsMaxBackoff   = 15 * time.Minute
 )
 
 func New(cfg config.Config, logger *slog.Logger, tokenStore auth.TokenStore) *App {
@@ -232,7 +233,10 @@ func (a *App) Run(ctx context.Context) error {
 
 	combinedStreamers := a.getCombinedStreamers()
 	contextLoader := channelpoints.ContextLoader{Client: gqlClient}
-	initialEvents := a.loadChannelPointEvents(ctx, contextLoader, streamers)
+	initialEvents, initialContextErr := a.loadChannelPointEvents(ctx, contextLoader, streamers)
+	if initialContextErr != nil && !errors.Is(initialContextErr, context.Canceled) {
+		a.logger.Warn("initial channel points load failed", slog.String("error", initialContextErr.Error()))
+	}
 
 	eng := engine.New(a.config, combinedStreamers, a.logger,
 		engine.WithPointRecorder(store.NewStateStore(a.config.Storage.Path)),
@@ -1079,6 +1083,7 @@ func (a *App) farmingCampaignForGame(gameName string) (campaignName, campaignKey
 
 func (a *App) discoverGamesStreamers(ctx context.Context, client gameStreamDiscoverer, stickyGameName string) ([]domain.Streamer, error) {
 	seen := make(map[string]bool)
+	var lastErr error
 
 	a.streamersMu.RLock()
 	for _, s := range a.staticStreamers {
@@ -1111,7 +1116,14 @@ func (a *App) discoverGamesStreamers(ctx context.Context, client gameStreamDisco
 		campaignIDs := a.activeCampaignIDsForGame(game)
 		streamers, err := client.GetLiveStreamsForCampaigns(ctx, game, campaignIDs, 3)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			if gql.IsPersistedQueryNotFound(err) {
+				return nil, fmt.Errorf("game discovery persisted query unavailable: %w", err)
+			}
 			a.logger.Warn("discover game streams failed", slog.String("game", game), slog.String("error", err.Error()))
+			lastErr = err
 			continue
 		}
 		if len(streamers) == 0 {
@@ -1138,6 +1150,9 @@ func (a *App) discoverGamesStreamers(ctx context.Context, client gameStreamDisco
 			slog.Int("count", len(targetStreamers)),
 		)
 		return targetStreamers, nil
+	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("game stream discovery incomplete: %w", lastErr)
 	}
 	return nil, nil
 }
@@ -1568,9 +1583,14 @@ func (a *App) pollChannelPoints(ctx context.Context, eng *engine.Engine, loader 
 	if baseInterval < time.Minute {
 		baseInterval = time.Minute
 	}
+	retryInterval := baseInterval
+	maxBackoff := channelPointsMaxBackoff
+	if maxBackoff < baseInterval {
+		maxBackoff = baseInterval
+	}
 
 	for {
-		nextInterval := randomDuration(baseInterval-10*time.Second, baseInterval+10*time.Second)
+		nextInterval := randomDuration(retryInterval-10*time.Second, retryInterval+10*time.Second)
 		timer := time.NewTimer(nextInterval)
 		select {
 		case <-ctx.Done():
@@ -1578,26 +1598,50 @@ func (a *App) pollChannelPoints(ctx context.Context, eng *engine.Engine, loader 
 			return
 		case <-timer.C:
 			streamers := a.getStreamersToPoll(eng)
-			for _, event := range a.loadChannelPointEvents(ctx, loader, streamers) {
+			events, err := a.loadChannelPointEvents(ctx, loader, streamers)
+			for _, event := range events {
 				eng.SendEvent(event)
 			}
+			if err == nil {
+				retryInterval = baseInterval
+				continue
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			if gql.IsPersistedQueryNotFound(err) {
+				retryInterval *= 2
+				if retryInterval > maxBackoff {
+					retryInterval = maxBackoff
+				}
+				a.logger.Warn("channel points query unavailable; backing off",
+					slog.String("error", err.Error()),
+					slog.Duration("retry_in", retryInterval),
+				)
+				continue
+			}
+			retryInterval = baseInterval
+			a.logger.Warn("channel points polling failed", slog.String("error", err.Error()))
 		}
 	}
 }
 
-func (a *App) loadChannelPointEvents(ctx context.Context, loader channelpoints.ContextLoader, streamers []domain.Streamer) []engine.Event {
+func (a *App) loadChannelPointEvents(ctx context.Context, loader channelpoints.ContextLoader, streamers []domain.Streamer) ([]engine.Event, error) {
 	events := make([]engine.Event, 0, len(streamers)*2)
 	for i, streamer := range streamers {
 		if i > 0 {
 			select {
 			case <-ctx.Done():
-				return events
+				return events, ctx.Err()
 			case <-time.After(randomDuration(1*time.Second, 3*time.Second)):
 			}
 		}
 
 		pointsContext, err := loader.Load(ctx, streamer.Login, streamer.ID)
 		if err != nil {
+			if gql.IsPersistedQueryNotFound(err) {
+				return events, fmt.Errorf("load channel points context for %s: %w", streamer.Login, err)
+			}
 			a.logger.Warn("load channel points context failed",
 				slog.String("streamer", streamer.Login),
 				slog.String("error", err.Error()),
@@ -1619,7 +1663,7 @@ func (a *App) loadChannelPointEvents(ctx context.Context, loader channelpoints.C
 			})
 		}
 	}
-	return events
+	return events, nil
 }
 
 func streamerLogins(streamers []config.StreamerConfig) []string {
@@ -1863,7 +1907,12 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 	if a.config.Watch.AutoStartCampaigns {
 		availableConnected, availableUnconnected, allDrops, err := invClient.GetActiveCampaignGames(ctx)
 		if err != nil {
-			a.logger.Warn("fetch active campaign games failed", slog.String("error", err.Error()))
+			previous := a.activeGamesSnapshot()
+			if len(previous) > 0 {
+				a.logger.Warn("fetch active campaign games failed; keeping previous active games", slog.String("error", err.Error()))
+				return previous
+			}
+			a.logger.Warn("fetch active campaign games failed; using in-progress inventory", slog.String("error", err.Error()))
 		} else {
 			a.dropsMu.Lock()
 			a.lastActiveCampaignDrops = allDrops

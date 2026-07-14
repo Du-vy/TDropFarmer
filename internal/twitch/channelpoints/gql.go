@@ -14,7 +14,7 @@ const (
 	claimCommunityPointsHash      = "46aaeebe02c99afdf4fc97c7c0cba964124bf6b0af229395f1f6d1feed05b3d0"
 
 	channelPointsContextOperation = "ChannelPointsContext"
-	channelPointsContextHash      = "1530a003a7d374b0380b79db0be0534f30ff46e61cffa2bc0e2468a909fbc024"
+	channelPointsContextHash      = "7fe050e3761eb2cf258d70ee1a21cbd76fa8cf3d7e7b12fc437e7029d446b5e3"
 )
 
 type GQLClient interface {

@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Du-vy/TDropFarmer/internal/twitch/profile"
@@ -41,6 +43,25 @@ type Error struct {
 
 func (e Error) Error() string {
 	return e.Message
+}
+
+func IsPersistedQueryNotFound(err error) bool {
+	var gqlErr Error
+	if !errors.As(err, &gqlErr) {
+		return false
+	}
+	if persistedQueryErrorCode(gqlErr.Message) == "persistedquerynotfound" {
+		return true
+	}
+	code, _ := gqlErr.Extra["code"].(string)
+	return persistedQueryErrorCode(code) == "persistedquerynotfound"
+}
+
+func persistedQueryErrorCode(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, "_", "")
+	value = strings.ReplaceAll(value, "-", "")
+	return strings.ReplaceAll(value, " ", "")
 }
 
 func (c Client) Do(ctx context.Context, request Request) (Response, error) {

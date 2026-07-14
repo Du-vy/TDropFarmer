@@ -85,11 +85,15 @@ func TestFormatEventMessage(t *testing.T) {
 
 type mockInventoryGQLClient struct {
 	dashboardResponse []byte
+	dashboardErr      error
 	detailResponses   map[string][]byte
 }
 
 func (m mockInventoryGQLClient) Do(ctx context.Context, req gql.Request) (gql.Response, error) {
 	if req.OperationName == "ViewerDropsDashboard" {
+		if m.dashboardErr != nil {
+			return gql.Response{}, m.dashboardErr
+		}
 		return gql.Response{Data: m.dashboardResponse}, nil
 	}
 	if req.OperationName == "DropCampaignDetails" {
@@ -487,10 +491,36 @@ func TestSortActiveGamesPriorityCampaignPreemptsCurrentNonPriorityCampaign(t *te
 	}
 }
 
+func TestSortActiveGamesKeepsPreviousCatalogWhenDashboardFails(t *testing.T) {
+	app := &App{
+		config: config.Config{
+			Watch: config.WatchConfig{
+				FallbackAllCampaigns: true,
+				AutoStartCampaigns:   true,
+			},
+			Features: config.FeatureConfig{ClaimDrops: config.Bool(true)},
+		},
+		activeGames: []string{"Existing Game", "Another Game"},
+		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	invClient := inventory.Client{Client: mockInventoryGQLClient{
+		dashboardErr: gql.Error{Message: "PersistedQueryNotFound"},
+	}}
+
+	got := app.sortActiveGames(context.Background(), invClient, []inventory.Drop{
+		{GameName: "Partial Inventory Game", IsEarnable: true},
+	}, "")
+
+	if len(got) != 2 || got[0] != "Existing Game" || got[1] != "Another Game" {
+		t.Fatalf("expected previous active games to be preserved, got %v", got)
+	}
+}
+
 type fakeGameDiscoverer struct {
 	calls             []string
 	campaignIDsByGame map[string][]string
 	streamers         map[string][]domain.Streamer
+	errorsByGame      map[string]error
 }
 
 func TestSortActiveGamesKeepsNewCampaignForCompletedSameGame(t *testing.T) {
@@ -545,7 +575,63 @@ func (f *fakeGameDiscoverer) GetLiveStreamsForCampaigns(ctx context.Context, gam
 		f.campaignIDsByGame = make(map[string][]string)
 	}
 	f.campaignIDsByGame[gameName] = append([]string(nil), campaignIDs...)
+	if err := f.errorsByGame[gameName]; err != nil {
+		return nil, err
+	}
 	return f.streamers[gameName], nil
+}
+
+func TestDiscoverGamesStreamersStopsAfterPersistedQueryFailure(t *testing.T) {
+	app := &App{
+		config: config.Config{
+			Watch:    config.WatchConfig{FallbackAllCampaigns: true},
+			Features: config.FeatureConfig{ClaimDrops: config.Bool(true)},
+		},
+		activeGames: []string{"First Game", "Second Game"},
+		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	discoverer := &fakeGameDiscoverer{errorsByGame: map[string]error{
+		"First Game": gql.Error{Message: "PersistedQueryNotFound"},
+	}}
+
+	_, err := app.discoverGamesStreamers(context.Background(), discoverer, "")
+	if !gql.IsPersistedQueryNotFound(err) {
+		t.Fatalf("expected persisted query error, got %v", err)
+	}
+	if len(discoverer.calls) != 1 || discoverer.calls[0] != "First Game" {
+		t.Fatalf("expected discovery to stop after first operation-wide failure, got calls %v", discoverer.calls)
+	}
+}
+
+type countingErrorGQLClient struct {
+	calls int
+	err   error
+}
+
+func (c *countingErrorGQLClient) Do(context.Context, gql.Request) (gql.Response, error) {
+	c.calls++
+	return gql.Response{}, c.err
+}
+
+func TestLoadChannelPointEventsStopsAfterPersistedQueryFailure(t *testing.T) {
+	client := &countingErrorGQLClient{err: gql.Error{Message: "PersistedQueryNotFound"}}
+	app := &App{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	streamers := []domain.Streamer{
+		{ID: "1", Login: "one"},
+		{ID: "2", Login: "two"},
+		{ID: "3", Login: "three"},
+	}
+
+	events, err := app.loadChannelPointEvents(context.Background(), channelpoints.ContextLoader{Client: client}, streamers)
+	if !gql.IsPersistedQueryNotFound(err) {
+		t.Fatalf("expected persisted query error, got %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected no channel point events, got %v", events)
+	}
+	if client.calls != 1 {
+		t.Fatalf("expected one request for an operation-wide failure, got %d", client.calls)
+	}
 }
 
 func TestDiscoverGamesStreamersStopsAtFirstGameWithStreams(t *testing.T) {

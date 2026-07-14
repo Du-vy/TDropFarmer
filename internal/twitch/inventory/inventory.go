@@ -14,13 +14,13 @@ import (
 
 const (
 	inventoryOperation = "Inventory"
-	inventoryHash      = "d86775d0ef16a63a33ad52e80eaff963b2d5b72fada7c991504a57496e1d8e4b"
+	inventoryHash      = "8337eb8541b314040b0edde0c09c5c7a2783ba1960aa9edfbf3bac16d0fec404"
 
 	claimDropOperation = "DropsPage_ClaimDropRewards"
 	claimDropHash      = "a455deea71bdc9015b78eb49f4acfbce8baa7ccbedd28e549bb025bd0f751930"
 
 	viewerCampaignsOperation = "ViewerDropsDashboard"
-	viewerCampaignsHash      = "5a4da2ab3d5b47c9f9ce864e727b2cb346af1e3ea8b897fe8f704a97ff017619"
+	viewerCampaignsHash      = "d9cae7761dafab85908c85e6683cb4201b449e66ac3bb5e894f15ff12aeafaa7"
 
 	campaignDetailsOperation = "DropCampaignDetails"
 	campaignDetailsHash      = "039277bf98f3130929262cc7c6efd9c141ca3749cb6dca442fc8ead9a53f77c1"
