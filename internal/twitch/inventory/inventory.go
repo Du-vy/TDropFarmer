@@ -67,6 +67,24 @@ type Drop struct {
 	IsClaimed       bool
 	IsClaimable     bool
 	IsEarnable      bool
+	// EndsAt is the earliest known deadline (campaign or drop end). Zero when
+	// Twitch did not report one.
+	EndsAt time.Time
+}
+
+// Completable reports whether the drop's remaining watch time still fits
+// before its deadline, keeping the completion safety buffer. Drops without a
+// known deadline or without remaining watch time are always completable.
+func (d Drop) Completable(now time.Time) bool {
+	if d.EndsAt.IsZero() {
+		return true
+	}
+	remaining := d.RequiredMinutes - d.CurrentMinutes
+	if remaining <= 0 {
+		return true
+	}
+	required := time.Duration(remaining)*time.Minute + dropCompletionSafetyBuffer
+	return d.EndsAt.Sub(now) >= required
 }
 
 var dimsRegex = regexp.MustCompile(`-\d+x\d+(\.(?:jpg|png|gif|jpeg|webp))$`)
@@ -123,7 +141,8 @@ func (c Client) GetInventory(ctx context.Context) ([]Drop, error) {
 				imageURL = td.BenefitEdges[0].Benefit.ImageAssetURL
 			}
 
-			drops = append(drops, Drop{
+			endsAt, _ := earliestDropDeadline(campaign.EndAt, td.EndAt)
+			drop := Drop{
 				ID:              td.ID,
 				Name:            td.Name,
 				CampaignID:      campaign.ID,
@@ -136,8 +155,12 @@ func (c Client) GetInventory(ctx context.Context) ([]Drop, error) {
 				DropInstanceID:  dropInstanceID,
 				IsClaimed:       td.Self.IsClaimed,
 				IsClaimable:     isClaimable,
-				IsEarnable:      isEarnable,
-			})
+				EndsAt:          endsAt,
+			}
+			// A drop whose remaining minutes no longer fit before the deadline
+			// is a wasted watch target, even if its window is still open.
+			drop.IsEarnable = isEarnable && drop.Completable(now)
+			drops = append(drops, drop)
 		}
 	}
 
@@ -479,8 +502,15 @@ func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, []string,
 		if detail != nil && detail.User != nil && detail.User.DropCampaign != nil {
 			cCampaign := detail.User.DropCampaign
 			gameImageURL := cleanTwitchImageURL(campaign.Game.BoxArtURL)
+			now := time.Now().UTC()
 			for _, td := range cCampaign.TimeBasedDrops {
 				if td.RequiredMinutesWatched <= 0 || td.RequiredSubs > 0 {
+					continue
+				}
+				endsAt, _ := earliestDropDeadline(cCampaign.EndAt, td.EndAt)
+				// Skip drops that can no longer be completed in the remaining
+				// window; the campaign stays if a sibling drop is still viable.
+				if !(Drop{RequiredMinutes: td.RequiredMinutesWatched, EndsAt: endsAt}).Completable(now) {
 					continue
 				}
 				var imageURL string
@@ -518,6 +548,7 @@ func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, []string,
 					IsClaimed:       isClaimed,
 					IsClaimable:     false,
 					IsEarnable:      true,
+					EndsAt:          endsAt,
 				})
 			}
 		}

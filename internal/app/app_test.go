@@ -1418,3 +1418,66 @@ func waitForActiveStreamers(t *testing.T, eng *engine.Engine, count int) {
 	}
 	t.Fatalf("active streamers = %v, want count %d", eng.ActiveStreamers(), count)
 }
+
+func TestSortActiveGamesOrdersOtherGamesByUrgency(t *testing.T) {
+	now := time.Now().UTC()
+	app := &App{config: config.Config{
+		Watch:    config.WatchConfig{FallbackAllCampaigns: true},
+		Features: config.FeatureConfig{ClaimDrops: config.Bool(true)},
+	}}
+	drops := []inventory.Drop{
+		{GameName: "Comfortable Game", IsEarnable: true, RequiredMinutes: 60, EndsAt: now.Add(48 * time.Hour)},
+		{GameName: "Urgent Game", IsEarnable: true, RequiredMinutes: 60, EndsAt: now.Add(2 * time.Hour)},
+		{GameName: "No Deadline Game", IsEarnable: true, RequiredMinutes: 60},
+	}
+
+	sorted := app.sortActiveGames(context.Background(), inventory.Client{}, drops, "")
+
+	expected := []string{"Urgent Game", "Comfortable Game", "No Deadline Game"}
+	if len(sorted) != len(expected) {
+		t.Fatalf("expected len %d, got %d (sorted = %v)", len(expected), len(sorted), sorted)
+	}
+	for i, game := range expected {
+		if sorted[i] != game {
+			t.Errorf("at index %d: expected %q, got %q (sorted = %v)", i, game, sorted[i], sorted)
+		}
+	}
+}
+
+func TestSortActiveGamesExcludesUnfinishablePriorityGame(t *testing.T) {
+	now := time.Now().UTC()
+	app := &App{config: config.Config{
+		Watch:    config.WatchConfig{PriorityGames: []string{"Doomed Game", "Healthy Game"}},
+		Features: config.FeatureConfig{ClaimDrops: config.Bool(true)},
+	}}
+	drops := []inventory.Drop{
+		// Unclaimed, window still open, but 290 remaining minutes can never
+		// fit before a deadline one hour away.
+		{GameName: "Doomed Game", IsEarnable: false, RequiredMinutes: 300, CurrentMinutes: 10, EndsAt: now.Add(time.Hour)},
+		{GameName: "Healthy Game", IsEarnable: true, RequiredMinutes: 60, EndsAt: now.Add(48 * time.Hour)},
+	}
+
+	sorted := app.sortActiveGames(context.Background(), inventory.Client{}, drops, "")
+
+	if len(sorted) != 1 || sorted[0] != "Healthy Game" {
+		t.Fatalf("expected only the finishable game, got %v", sorted)
+	}
+}
+
+func TestSortActiveGamesKeepsPriorityGameWithoutDeadlineInfo(t *testing.T) {
+	app := &App{config: config.Config{
+		Watch:    config.WatchConfig{PriorityGames: []string{"Mystery Game"}},
+		Features: config.FeatureConfig{ClaimDrops: config.Bool(true)},
+	}}
+	// Unclaimed drop without deadline data must stay farmable (safety net for
+	// campaigns where Twitch reports incomplete metadata).
+	drops := []inventory.Drop{
+		{GameName: "Mystery Game", IsEarnable: false, IsClaimed: false},
+	}
+
+	sorted := app.sortActiveGames(context.Background(), inventory.Client{}, drops, "")
+
+	if len(sorted) != 1 || sorted[0] != "Mystery Game" {
+		t.Fatalf("expected game without deadline info to be kept, got %v", sorted)
+	}
+}

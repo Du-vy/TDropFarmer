@@ -194,6 +194,9 @@ func (a *App) Run(ctx context.Context) error {
 	gqlClient := gql.Client{
 		ClientID:    a.config.Auth.ClientID,
 		AccessToken: token.AccessToken,
+		// Every derived client copies this struct, so the shared limiter
+		// bounds the account-wide GQL request rate.
+		Limiter: gql.NewRateLimiter(5, time.Second),
 	}
 
 	// Load initial active games from inventory or active campaigns if drops are enabled
@@ -1731,12 +1734,18 @@ func (a *App) shouldJoinChat(login string) bool {
 }
 
 func (a *App) isPriorityGame(gameName string) bool {
-	for _, pg := range a.config.Watch.PriorityGames {
+	return a.priorityGameIndex(gameName) >= 0
+}
+
+// priorityGameIndex returns the game's position in the configured priority
+// list, or -1 when the game is not listed.
+func (a *App) priorityGameIndex(gameName string) int {
+	for i, pg := range a.config.Watch.PriorityGames {
 		if strings.EqualFold(pg, gameName) {
-			return true
+			return i
 		}
 	}
-	return false
+	return -1
 }
 
 func gameKey(gameName string) string {
@@ -1866,20 +1875,43 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 	inProgressMap := make(map[string]bool)
 	addedInProgress := make(map[string]bool)
 
-	// Keep track of games that have drops and games that have unclaimed drops
+	// Keep track of games that have drops and games that still have a drop
+	// worth farming (unclaimed and completable before its deadline).
 	hasAnyDrops := make(map[string]bool)
-	hasUnclaimed := make(map[string]bool)
+	hasFeasible := make(map[string]bool)
+
+	now := time.Now().UTC()
+
+	// spareMinutes tracks, per game, the smallest margin between a drop's
+	// deadline and the watch time it still needs. Games about to run out of
+	// time sort first within their tier.
+	spareMinutes := make(map[string]float64)
+	noteSpare := func(drop inventory.Drop) {
+		if drop.IsClaimed || drop.GameName == "" || drop.EndsAt.IsZero() || drop.RequiredMinutes <= 0 {
+			return
+		}
+		remaining := drop.RequiredMinutes - drop.CurrentMinutes
+		if remaining < 0 {
+			remaining = 0
+		}
+		spare := drop.EndsAt.Sub(now).Minutes() - float64(remaining)
+		key := gameKey(drop.GameName)
+		if current, ok := spareMinutes[key]; !ok || spare < current {
+			spareMinutes[key] = spare
+		}
+	}
 
 	for _, drop := range drops {
 		if drop.GameName != "" {
 			key := gameKey(drop.GameName)
 			hasAnyDrops[key] = true
-			if !drop.IsClaimed {
-				hasUnclaimed[key] = true
+			if !drop.IsClaimed && drop.Completable(now) {
+				hasFeasible[key] = true
 			}
 			if !drop.IsClaimed && drop.IsEarnable {
 				inProgressMap[key] = true
 			}
+			noteSpare(drop)
 		}
 	}
 
@@ -1921,6 +1953,7 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 				if drop.GameName != "" && drop.IsEarnable && !drop.IsClaimed && drop.RequiredMinutes > 0 {
 					availableGames[gameKey(drop.GameName)] = true
 				}
+				noteSpare(drop)
 			}
 			seenConnected := make(map[string]bool)
 			for _, game := range availableConnected {
@@ -1946,6 +1979,37 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 				}
 			}
 		}
+	}
+
+	// Within each tier, farm the games with the least spare time first so
+	// campaigns about to end are not starved by comfortable ones. Games
+	// without a known deadline keep their discovery order at the end.
+	byUrgency := func(games []string) func(int, int) bool {
+		return func(i, j int) bool {
+			spareI, okI := spareMinutes[gameKey(games[i])]
+			spareJ, okJ := spareMinutes[gameKey(games[j])]
+			if okI != okJ {
+				return okI
+			}
+			return okI && spareI < spareJ
+		}
+	}
+	for _, tier := range [][]string{otherInProgress, otherConnectedAvailable, otherUnconnectedAvailable} {
+		sort.SliceStable(tier, byUrgency(tier))
+	}
+	// Priority tiers honor the configured list order first; urgency only
+	// breaks ties between games at the same configured position.
+	for _, tier := range [][]string{priorityInProgress, priorityConnectedAvailable, priorityUnconnectedAvailable} {
+		tier := tier
+		urgency := byUrgency(tier)
+		sort.SliceStable(tier, func(i, j int) bool {
+			rankI := a.priorityGameIndex(tier[i])
+			rankJ := a.priorityGameIndex(tier[j])
+			if rankI != rankJ {
+				return rankI < rankJ
+			}
+			return urgency(i, j)
+		})
 	}
 
 	var sortedGames []string
@@ -1983,7 +2047,7 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 		}
 		for _, pg := range a.config.Watch.PriorityGames {
 			pgKey := gameKey(pg)
-			if hasAnyDrops[pgKey] && !hasUnclaimed[pgKey] && !availableGames[pgKey] {
+			if hasAnyDrops[pgKey] && !hasFeasible[pgKey] && !availableGames[pgKey] {
 				continue
 			}
 
@@ -2003,9 +2067,9 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 	filtered := sortedGames[:0]
 	for _, game := range sortedGames {
 		key := gameKey(game)
-		if hasAnyDrops[key] && !hasUnclaimed[key] && !availableGames[key] {
+		if hasAnyDrops[key] && !hasFeasible[key] && !availableGames[key] {
 			if a.logger != nil {
-				a.logger.Debug("excluding game with all drops claimed",
+				a.logger.Debug("excluding game with no farmable drops left",
 					slog.String("game", game),
 				)
 			}

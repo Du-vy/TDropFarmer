@@ -161,6 +161,116 @@ func TestGetInventoryMarksExpiredDropNotEarnable(t *testing.T) {
 	}
 }
 
+func TestGetInventoryMarksUnfinishableDropNotEarnable(t *testing.T) {
+	now := time.Now().UTC()
+	// Campaign ends in 30 minutes; the second drop still needs 110 minutes and
+	// can no longer be completed, while the first only needs 5 more.
+	endAt := now.Add(30 * time.Minute).Format(time.RFC3339)
+	startAt := now.Add(-24 * time.Hour).Format(time.RFC3339)
+	mockResponse := `{"currentUser":{"inventory":{"dropCampaignsInProgress":[
+		{
+			"id": "campaign-1",
+			"name": "Campaign 1",
+			"status": "ACTIVE",
+			"startAt": "` + startAt + `",
+			"endAt": "` + endAt + `",
+			"game": {"id": "game-1", "name": "Game 1", "slug": "game-1"},
+			"timeBasedDrops": [
+				{
+					"id": "drop-finishable",
+					"name": "Finishable",
+					"requiredMinutesWatched": 60,
+					"self": {"currentMinutesWatched": 55, "hasPreconditionsMet": true, "dropInstanceID": null, "isClaimed": false}
+				},
+				{
+					"id": "drop-doomed",
+					"name": "Doomed",
+					"requiredMinutesWatched": 120,
+					"self": {"currentMinutesWatched": 10, "hasPreconditionsMet": true, "dropInstanceID": null, "isClaimed": false}
+				}
+			]
+		}
+	]}}}`
+
+	client := &recordingGQLClient{response: gql.Response{Data: json.RawMessage(mockResponse)}}
+	drops, err := Client{Client: client}.GetInventory(context.Background())
+	if err != nil {
+		t.Fatalf("GetInventory returned error: %v", err)
+	}
+	if len(drops) != 2 {
+		t.Fatalf("expected 2 drops, got %d", len(drops))
+	}
+	if !drops[0].IsEarnable {
+		t.Errorf("finishable drop marked not earnable: %+v", drops[0])
+	}
+	if drops[1].IsEarnable {
+		t.Errorf("unfinishable drop marked earnable: %+v", drops[1])
+	}
+	if drops[0].EndsAt.IsZero() || drops[1].EndsAt.IsZero() {
+		t.Errorf("expected EndsAt to be populated, got %v and %v", drops[0].EndsAt, drops[1].EndsAt)
+	}
+}
+
+func TestDropCompletable(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		name string
+		drop Drop
+		want bool
+	}{
+		{name: "no deadline", drop: Drop{RequiredMinutes: 600}, want: true},
+		{name: "fits with buffer", drop: Drop{RequiredMinutes: 60, EndsAt: now.Add(2 * time.Hour)}, want: true},
+		{name: "does not fit", drop: Drop{RequiredMinutes: 120, EndsAt: now.Add(time.Hour)}, want: false},
+		{name: "progress makes it fit", drop: Drop{RequiredMinutes: 120, CurrentMinutes: 80, EndsAt: now.Add(time.Hour)}, want: true},
+		{name: "inside safety buffer", drop: Drop{RequiredMinutes: 55, EndsAt: now.Add(time.Hour)}, want: false},
+		{name: "fully watched near deadline", drop: Drop{RequiredMinutes: 60, CurrentMinutes: 60, EndsAt: now.Add(time.Minute)}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.drop.Completable(now); got != tt.want {
+				t.Fatalf("Completable() = %v, want %v (drop %+v)", got, tt.want, tt.drop)
+			}
+		})
+	}
+}
+
+func TestGetActiveCampaignGamesSkipsUncompletableDropEntries(t *testing.T) {
+	now := time.Now().UTC()
+	startAt := now.Add(-time.Hour).Format(time.RFC3339)
+	endAt := now.Add(time.Hour).Format(time.RFC3339)
+	dashboard := []byte(`{"currentUser":{"dropCampaigns":[{"id":"camp","status":"ACTIVE","game":{"displayName":"Game 1"}}]}}`)
+	details := map[string][]byte{
+		"camp": []byte(`{"user":{"dropCampaign":{
+			"id": "camp",
+			"name": "Campaign",
+			"status": "ACTIVE",
+			"startAt": "` + startAt + `",
+			"endAt": "` + endAt + `",
+			"self": {"isAccountConnected": true},
+			"game": {"displayName": "Game 1"},
+			"timeBasedDrops": [
+				{"id": "quick", "requiredMinutesWatched": 30, "self": {"hasPreconditionsMet": true, "isClaimed": false}},
+				{"id": "doomed", "requiredMinutesWatched": 120, "self": {"hasPreconditionsMet": true, "isClaimed": false}}
+			]
+		}}}`),
+	}
+	client := campaignGamesGQLClient{dashboard: dashboard, details: details}
+
+	connected, _, allDrops, err := Client{Client: client, UserID: "viewer"}.GetActiveCampaignGames(context.Background())
+	if err != nil {
+		t.Fatalf("GetActiveCampaignGames returned error: %v", err)
+	}
+	if len(connected) != 1 || connected[0] != "Game 1" {
+		t.Fatalf("expected campaign with a viable drop to stay, got %v", connected)
+	}
+	if len(allDrops) != 1 || allDrops[0].ID != "quick" {
+		t.Fatalf("expected only the completable drop entry, got %+v", allDrops)
+	}
+	if allDrops[0].EndsAt.IsZero() {
+		t.Fatalf("expected EndsAt to be populated on campaign drops, got %+v", allDrops[0])
+	}
+}
+
 func TestClaimDropSuccess(t *testing.T) {
 	mockResponse := `{"claimDropRewards":{"status":"ELIGIBLE_FOR_ALL"}}`
 	client := &recordingGQLClient{
