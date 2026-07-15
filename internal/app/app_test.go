@@ -177,7 +177,7 @@ func TestCheckAndClaimDropsRemovesClaimedGameBeforeSorting(t *testing.T) {
 		claimResponse: []byte(`{"claimDropRewards":{"status":"ELIGIBLE_FOR_ALL"}}`),
 	}}
 
-	app.checkAndClaimDrops(context.Background(), eng, invClient)
+	app.checkAndClaimDropsWithCampaignRefresh(context.Background(), eng, invClient, true)
 
 	if len(app.activeGames) != 1 || app.activeGames[0] != "REMATCH" {
 		t.Fatalf("expected only REMATCH after claiming final 7DS drop, got %v", app.activeGames)
@@ -206,7 +206,7 @@ func TestInitialDropCheckReusesLoadedCampaigns(t *testing.T) {
 		t.Fatalf("initial drop check repeated campaign scan %d times", client.dashboardCalls)
 	}
 
-	app.checkAndClaimDrops(context.Background(), eng, invClient)
+	app.checkAndClaimDropsWithCampaignRefresh(context.Background(), eng, invClient, true)
 	if client.dashboardCalls != 1 {
 		t.Fatalf("periodic drop check campaign scans = %d, want 1", client.dashboardCalls)
 	}
@@ -287,7 +287,7 @@ func TestSortActiveGames(t *testing.T) {
 		{GameName: "Corepunk", IsEarnable: true},
 	}
 
-	sorted := app.sortActiveGames(context.Background(), invClient, drops, "")
+	sorted, _ := app.sortActiveGames(context.Background(), invClient, drops, "")
 	// Expected Order:
 	// Priority games in progress: "Corepunk"
 	// Priority games available (active campaign but not in progress): "Overwatch"
@@ -305,7 +305,7 @@ func TestSortActiveGames(t *testing.T) {
 
 	// 2. Case where FallbackAllCampaigns is false
 	app.config.Watch.FallbackAllCampaigns = false
-	sorted = app.sortActiveGames(context.Background(), invClient, drops, "")
+	sorted, _ = app.sortActiveGames(context.Background(), invClient, drops, "")
 	// Expected Order:
 	// Only Priority games (in progress first, then available, then remaining configured):
 	// "Corepunk", "Overwatch"
@@ -328,7 +328,7 @@ func TestSortActiveGames(t *testing.T) {
 		// Game: Corepunk (Priority, in progress and earnable)
 		{GameName: "Corepunk", IsEarnable: true, IsClaimed: false},
 	}
-	sorted = app.sortActiveGames(context.Background(), invClient, drops, "")
+	sorted, _ = app.sortActiveGames(context.Background(), invClient, drops, "")
 	// Expected: "Corepunk" (in progress) and "Overwatch" (available).
 	// "THE FINALS" should be excluded because all of its drops are claimed/completed.
 	expected = []string{"Corepunk", "Overwatch"}
@@ -348,7 +348,7 @@ func TestSortActiveGames(t *testing.T) {
 		{GameName: "THE FINALS", IsEarnable: false, IsClaimed: true},
 		{GameName: "Corepunk", IsEarnable: true, IsClaimed: false},
 	}
-	sorted = app.sortActiveGames(context.Background(), invClient, drops, "")
+	sorted, _ = app.sortActiveGames(context.Background(), invClient, drops, "")
 	for _, game := range sorted {
 		if strings.EqualFold(game, "THE FINALS") {
 			t.Errorf("THE FINALS should be excluded when all drops are claimed, got sorted = %v", sorted)
@@ -412,7 +412,7 @@ func TestSortActiveGamesPrioritizesConnectedOverUnconnected(t *testing.T) {
 	}
 	invClient := inventory.Client{Client: mockClient, UserID: "805921782"}
 
-	sorted := app.sortActiveGames(context.Background(), invClient, nil, "")
+	sorted, _ := app.sortActiveGames(context.Background(), invClient, nil, "")
 	// Expected Order:
 	// 1. Priority connected: "ConnectedPriority"
 	// 2. Priority unconnected: "UnconnectedPriority"
@@ -451,7 +451,7 @@ func TestSortActiveGamesKeepsCurrentCampaignWithinSamePriorityBucket(t *testing.
 		{GameName: "Black Desert", CampaignID: "black-desert-campaign", IsEarnable: true, IsClaimed: false},
 	}
 
-	sorted := app.sortActiveGames(context.Background(), invClient, drops, "Black Desert")
+	sorted, _ := app.sortActiveGames(context.Background(), invClient, drops, "Black Desert")
 
 	if len(sorted) < 2 {
 		t.Fatalf("expected at least 2 games, got %v", sorted)
@@ -484,7 +484,7 @@ func TestSortActiveGamesPriorityCampaignPreemptsCurrentNonPriorityCampaign(t *te
 		{GameName: "Warframe", CampaignID: "warframe-campaign", IsEarnable: true, IsClaimed: false},
 	}
 
-	sorted := app.sortActiveGames(context.Background(), invClient, drops, "Black Desert")
+	sorted, _ := app.sortActiveGames(context.Background(), invClient, drops, "Black Desert")
 
 	if len(sorted) == 0 || sorted[0] != "Warframe" {
 		t.Fatalf("expected priority campaign to preempt current non-priority campaign, got %v", sorted)
@@ -507,7 +507,7 @@ func TestSortActiveGamesKeepsPreviousCatalogWhenDashboardFails(t *testing.T) {
 		dashboardErr: gql.Error{Message: "PersistedQueryNotFound"},
 	}}
 
-	got := app.sortActiveGames(context.Background(), invClient, []inventory.Drop{
+	got, _ := app.sortActiveGames(context.Background(), invClient, []inventory.Drop{
 		{GameName: "Partial Inventory Game", IsEarnable: true},
 	}, "")
 
@@ -540,7 +540,7 @@ func TestSortActiveGamesKeepsNewCampaignForCompletedSameGame(t *testing.T) {
 	}
 	drops := []inventory.Drop{{GameName: "Marvel Rivals", CampaignID: "season-8", IsClaimed: true}}
 
-	got := app.sortActiveGames(context.Background(), inventory.Client{Client: client, UserID: "viewer"}, drops, "")
+	got, _ := app.sortActiveGames(context.Background(), inventory.Client{Client: client, UserID: "viewer"}, drops, "")
 	if len(got) != 1 || got[0] != "Marvel Rivals" {
 		t.Fatalf("expected active same-game campaign to survive completed inventory campaign, got %v", got)
 	}
@@ -563,7 +563,7 @@ func TestSortActiveGamesDoesNotLetUnearnableSameGameCampaignBlockNewCampaign(t *
 	}
 	drops := []inventory.Drop{{GameName: "Marvel Rivals", CampaignID: "jubilee", IsClaimed: false, IsEarnable: false}}
 
-	got := app.sortActiveGames(context.Background(), inventory.Client{Client: client, UserID: "viewer"}, drops, "")
+	got, _ := app.sortActiveGames(context.Background(), inventory.Client{Client: client, UserID: "viewer"}, drops, "")
 	if len(got) != 1 || got[0] != "Marvel Rivals" {
 		t.Fatalf("expected new watch campaign despite unearnable same-game campaign, got %v", got)
 	}
@@ -1431,7 +1431,7 @@ func TestSortActiveGamesOrdersOtherGamesByUrgency(t *testing.T) {
 		{GameName: "No Deadline Game", IsEarnable: true, RequiredMinutes: 60},
 	}
 
-	sorted := app.sortActiveGames(context.Background(), inventory.Client{}, drops, "")
+	sorted, _ := app.sortActiveGames(context.Background(), inventory.Client{}, drops, "")
 
 	expected := []string{"Urgent Game", "Comfortable Game", "No Deadline Game"}
 	if len(sorted) != len(expected) {
@@ -1457,7 +1457,7 @@ func TestSortActiveGamesExcludesUnfinishablePriorityGame(t *testing.T) {
 		{GameName: "Healthy Game", IsEarnable: true, RequiredMinutes: 60, EndsAt: now.Add(48 * time.Hour)},
 	}
 
-	sorted := app.sortActiveGames(context.Background(), inventory.Client{}, drops, "")
+	sorted, _ := app.sortActiveGames(context.Background(), inventory.Client{}, drops, "")
 
 	if len(sorted) != 1 || sorted[0] != "Healthy Game" {
 		t.Fatalf("expected only the finishable game, got %v", sorted)
@@ -1475,7 +1475,7 @@ func TestSortActiveGamesKeepsPriorityGameWithoutDeadlineInfo(t *testing.T) {
 		{GameName: "Mystery Game", IsEarnable: false, IsClaimed: false},
 	}
 
-	sorted := app.sortActiveGames(context.Background(), inventory.Client{}, drops, "")
+	sorted, _ := app.sortActiveGames(context.Background(), inventory.Client{}, drops, "")
 
 	if len(sorted) != 1 || sorted[0] != "Mystery Game" {
 		t.Fatalf("expected game without deadline info to be kept, got %v", sorted)

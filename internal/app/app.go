@@ -96,6 +96,17 @@ const (
 	targetGameDiscoveryRefreshInterval = 30 * time.Minute
 	dropProgressStallUnchangedPolls    = 2
 
+	// Claims, drop progress, and stall detection ride the inventory poll, so
+	// it stays fast. The campaign-directory scan only discovers new work and
+	// is far more expensive, so it runs on its own slower cadence — tightened
+	// while idle, when a new campaign is the only possible source of work.
+	inventoryPollMinInterval    = 4 * time.Minute
+	inventoryPollMaxInterval    = 6 * time.Minute
+	campaignScanMinInterval     = 30 * time.Minute
+	campaignScanMaxInterval     = 60 * time.Minute
+	campaignScanIdleMinInterval = 12 * time.Minute
+	campaignScanIdleMaxInterval = 18 * time.Minute
+
 	// Keep a stall-rotated streamer out of discovery long enough that the next
 	// discovery pass picks someone else instead of re-adding them minutes later.
 	stallRotationCooldown = 90 * time.Minute
@@ -211,8 +222,11 @@ func (a *App) Run(ctx context.Context) error {
 			a.dropsMu.Lock()
 			a.lastDrops = drops
 			a.dropsMu.Unlock()
-			initialActiveGames = a.sortActiveGames(ctx, inventoryClient, drops, "")
-			initialCampaignsLoaded = true
+			var scanOK bool
+			initialActiveGames, scanOK = a.sortActiveGames(ctx, inventoryClient, drops, "")
+			// A failed directory scan is not "loaded": pollDrops must retry
+			// it on its first pass instead of waiting out a scan interval.
+			initialCampaignsLoaded = scanOK
 		}
 		a.activeGamesMu.Lock()
 		a.activeGames = initialActiveGames
@@ -442,30 +456,47 @@ func (a *App) Run(ctx context.Context) error {
 func (a *App) pollDrops(ctx context.Context, eng *engine.Engine, invClient inventory.Client, initialCampaignsLoaded bool) {
 	// Inventory and claims still run immediately, but the expensive campaign
 	// scan was already completed synchronously before initial discovery.
-	a.checkAndClaimDropsWithCampaignRefresh(ctx, eng, invClient, !initialCampaignsLoaded)
+	scanned := a.checkAndClaimDropsWithCampaignRefresh(ctx, eng, invClient, !initialCampaignsLoaded)
+	nextCampaignScanAt := time.Now()
+	if scanned || initialCampaignsLoaded {
+		nextCampaignScanAt = nextCampaignScanAt.Add(a.nextCampaignScanDelay())
+	}
 
 	for {
-		nextInterval := randomDuration(12*time.Minute, 18*time.Minute)
-		timer := time.NewTimer(nextInterval)
+		timer := time.NewTimer(randomDuration(inventoryPollMinInterval, inventoryPollMaxInterval))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return
 		case <-timer.C:
-			a.checkAndClaimDrops(ctx, eng, invClient)
+			wantScan := !time.Now().Before(nextCampaignScanAt)
+			// True also when a successful claim escalated an inventory-only
+			// poll into a scan; a failed scan leaves nextCampaignScanAt in
+			// the past so the next poll retries it.
+			if a.checkAndClaimDropsWithCampaignRefresh(ctx, eng, invClient, wantScan) {
+				nextCampaignScanAt = time.Now().Add(a.nextCampaignScanDelay())
+			}
 		}
 	}
 }
 
-func (a *App) checkAndClaimDrops(ctx context.Context, eng *engine.Engine, invClient inventory.Client) {
-	a.checkAndClaimDropsWithCampaignRefresh(ctx, eng, invClient, true)
+func (a *App) nextCampaignScanDelay() time.Duration {
+	if len(a.activeGamesSnapshot()) == 0 {
+		return randomDuration(campaignScanIdleMinInterval, campaignScanIdleMaxInterval)
+	}
+	return randomDuration(campaignScanMinInterval, campaignScanMaxInterval)
 }
 
-func (a *App) checkAndClaimDropsWithCampaignRefresh(ctx context.Context, eng *engine.Engine, invClient inventory.Client, refreshActiveGames bool) {
+// checkAndClaimDropsWithCampaignRefresh polls the inventory, claims what is
+// claimable, and — when requested or after a successful claim — refreshes the
+// active-games ranking. It returns true only when that refresh completed with
+// a successful campaign-directory scan, so the caller can schedule the next
+// scan (a false return means the scan still needs to happen).
+func (a *App) checkAndClaimDropsWithCampaignRefresh(ctx context.Context, eng *engine.Engine, invClient inventory.Client, refreshActiveGames bool) bool {
 	drops, err := invClient.GetInventory(ctx)
 	if err != nil {
 		a.logger.Warn("fetch drops inventory failed", slog.String("error", err.Error()))
-		return
+		return false
 	}
 
 	a.checkWatchCreditWatchdog(eng, drops)
@@ -546,10 +577,10 @@ func (a *App) checkAndClaimDropsWithCampaignRefresh(ctx context.Context, eng *en
 	a.lastDrops = drops
 	a.dropsMu.Unlock()
 	if !refreshActiveGames {
-		return
+		return false
 	}
 
-	activeGames := a.sortActiveGames(ctx, invClient, drops, a.activeDynamicDropGame(eng))
+	activeGames, scanOK := a.sortActiveGames(ctx, invClient, drops, a.activeDynamicDropGame(eng))
 
 	a.activeGamesMu.Lock()
 	a.activeGames = activeGames
@@ -565,6 +596,7 @@ func (a *App) checkAndClaimDropsWithCampaignRefresh(ctx context.Context, eng *en
 		Payload: activeGames,
 		Time:    time.Now().UTC(),
 	})
+	return scanOK
 }
 
 func (a *App) formatEventMessage(event engine.Event) string {
@@ -1868,7 +1900,10 @@ func (a *App) canKeepCurrentFarmingGame(games []string, stickyGameName string) b
 	return true
 }
 
-func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, drops []inventory.Drop, stickyGameName string) []string {
+// sortActiveGames returns the ranked list of games to farm plus whether the
+// campaign-directory scan behind it succeeded (always true when
+// AutoStartCampaigns is off, since no scan is needed).
+func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, drops []inventory.Drop, stickyGameName string) ([]string, bool) {
 	// Categorize in-progress games
 	var priorityInProgress []string
 	var otherInProgress []string
@@ -1936,13 +1971,15 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 	var otherUnconnectedAvailable []string
 	availableGames := make(map[string]bool)
 
+	scanOK := true
 	if a.config.Watch.AutoStartCampaigns {
 		availableConnected, availableUnconnected, allDrops, err := invClient.GetActiveCampaignGames(ctx)
 		if err != nil {
+			scanOK = false
 			previous := a.activeGamesSnapshot()
 			if len(previous) > 0 {
 				a.logger.Warn("fetch active campaign games failed; keeping previous active games", slog.String("error", err.Error()))
-				return previous
+				return previous, false
 			}
 			a.logger.Warn("fetch active campaign games failed; using in-progress inventory", slog.String("error", err.Error()))
 		} else {
@@ -2080,5 +2117,5 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 	sortedGames = filtered
 	sortedGames = a.stabilizeCurrentFarmingGame(sortedGames, gameRanks, stickyGameName)
 
-	return sortedGames
+	return sortedGames, scanOK
 }
