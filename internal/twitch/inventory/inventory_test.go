@@ -108,6 +108,10 @@ func TestGetInventory(t *testing.T) {
 		t.Errorf("drop 0 incorrect: %+v", drops[0])
 	}
 
+	if drops[0].Name != "Benefit 1" {
+		t.Errorf("expected drop 0 to prefer benefit name \"Benefit 1\", got %q", drops[0].Name)
+	}
+
 	if drops[0].GameImageURL != "https://static-cdn.jtvnw.net/ttv-boxart/game-1.jpg" {
 		t.Errorf("expected GameImageURL to be https://static-cdn.jtvnw.net/ttv-boxart/game-1.jpg, got %q", drops[0].GameImageURL)
 	}
@@ -118,6 +122,10 @@ func TestGetInventory(t *testing.T) {
 
 	if drops[1].ID != "drop-2" || drops[1].CurrentMinutes != 60 || !drops[1].IsClaimable || !drops[1].IsEarnable || drops[1].DropInstanceID != "instance-2" || drops[1].GameName != "Game 1" {
 		t.Errorf("drop 1 incorrect: %+v", drops[1])
+	}
+
+	if drops[1].Name != "Drop 2" {
+		t.Errorf("expected drop 1 without benefits to fall back to drop name \"Drop 2\", got %q", drops[1].Name)
 	}
 }
 

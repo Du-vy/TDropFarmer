@@ -137,14 +137,20 @@ func (c Client) GetInventory(ctx context.Context) ([]Drop, error) {
 			isEarnable := !td.Self.IsClaimed && td.RequiredMinutesWatched > 0 && td.RequiredSubs == 0 && preconditionsMet && campaignDropActive(now, campaign.Status, campaign.StartAt, campaign.EndAt, td.StartAt, td.EndAt)
 
 			var imageURL string
+			// Campaign owners sometimes name timed drops "1", "2", ...; the
+			// benefit carries the item name the Twitch UI displays.
+			name := td.Name
 			if len(td.BenefitEdges) > 0 {
 				imageURL = td.BenefitEdges[0].Benefit.ImageAssetURL
+				if benefitName := td.BenefitEdges[0].Benefit.Name; benefitName != "" {
+					name = benefitName
+				}
 			}
 
 			endsAt, _ := earliestDropDeadline(campaign.EndAt, td.EndAt)
 			drop := Drop{
 				ID:              td.ID,
-				Name:            td.Name,
+				Name:            name,
 				CampaignID:      campaign.ID,
 				CampaignName:    campaign.Name,
 				GameName:        campaign.Game.Name,
