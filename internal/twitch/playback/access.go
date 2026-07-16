@@ -108,6 +108,13 @@ func (w *Watcher) SetSpadeURL(target string) {
 	}
 }
 
+// SetHTTPClient replaces the default HTTP client, e.g. with a proxied one.
+func (w *Watcher) SetHTTPClient(client *http.Client) {
+	if client != nil {
+		w.client = client
+	}
+}
+
 func (w *Watcher) SendMinuteWatched(ctx context.Context, streamer domain.Streamer, userID string) error {
 	return w.sendWatched(ctx, streamer, userID, true)
 }
@@ -288,8 +295,12 @@ func encodeSpadePayload(streamer domain.Streamer, userID string, includeDropMeta
 	return base64.StdEncoding.EncodeToString(raw), nil
 }
 
-func DiscoverSpadeURL(ctx context.Context) (string, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
+// DiscoverSpadeURL locates the Spade telemetry endpoint. A nil client uses a
+// default direct one.
+func DiscoverSpadeURL(ctx context.Context, client *http.Client) (string, error) {
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
 	return discoverSpadeURL(ctx, client, "https://www.twitch.tv/")
 }
 

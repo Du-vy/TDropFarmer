@@ -39,5 +39,8 @@
       "url": "",
       "method": "POST"
     }
+  },
+  "network": {
+    "proxy_url": ""
   }
 }

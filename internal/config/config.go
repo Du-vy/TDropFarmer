@@ -9,6 +9,7 @@ type Config struct {
 	Storage       StorageConfig      `json:"storage"`
 	Logging       LoggingConfig      `json:"logging"`
 	Notifications NotificationConfig `json:"notifications"`
+	Network       NetworkConfig      `json:"network"`
 }
 
 type AccountConfig struct {
@@ -50,6 +51,14 @@ type StreamerConfig struct {
 
 type StorageConfig struct {
 	Path string `json:"path"`
+}
+
+type NetworkConfig struct {
+	// ProxyURL, when set, routes all Twitch traffic (GQL, Helix, auth,
+	// playback telemetry, and IRC chat) through a SOCKS5 proxy, e.g.
+	// "socks5://warp:1080". Empty means direct connection. The Discord
+	// webhook notifier is never proxied.
+	ProxyURL string `json:"proxy_url"`
 }
 
 type LoggingConfig struct {

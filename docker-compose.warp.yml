@@ -1,0 +1,42 @@
+# Optional Cloudflare WARP egress.
+#
+# To route ALL Twitch traffic (GraphQL, Helix, auth, watch telemetry, and IRC
+# chat) through a WARP tunnel:
+#
+#   1. Set "network": { "proxy_url": "socks5://warp:1080" } in config.json.
+#   2. Layer this file on top of the base compose file:
+#
+#      docker compose -f docker-compose.yml -f docker-compose.warp.yml up -d
+#
+# Keep both in sync: the proxy_url makes the bot use the tunnel, this file
+# provides it. Running `docker compose up -d` without this file (and with an
+# empty proxy_url) keeps the default direct connection; nothing else changes.
+services:
+  warp:
+    image: caomingjun/warp
+    container_name: tdropfarmer-warp
+    restart: unless-stopped
+    environment:
+      - WARP_SLEEP=2
+      # - WARP_LICENSE_KEY= # optional, for WARP+ subscriptions
+    # NET_ADMIN is required so the Cloudflare WARP client can create its
+    # virtual tunnel interface and manage routes inside the container.
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=0
+      - net.ipv4.conf.all.src_valid_mark=1
+    volumes:
+      # Persists the WARP device registration across restarts.
+      - ./data/warp:/var/lib/cloudflare-warp
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s https://cloudflare.com/cdn-cgi/trace | grep -qE 'warp=(on|plus)'"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  tdropfarmer:
+    depends_on:
+      warp:
+        condition: service_healthy

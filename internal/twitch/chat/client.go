@@ -19,7 +19,12 @@ type Client struct {
 	Logger    *slog.Logger
 	OnMention func(sender, message string)
 
-	Addr      string
+	Addr string
+
+	// Dial, when set, replaces the direct TCP dial — e.g. to tunnel the IRC
+	// connection through the same SOCKS5 proxy as the HTTP clients. Nil
+	// means a direct connection.
+	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
 
 	conn net.Conn
 	mu   sync.Mutex
@@ -40,18 +45,29 @@ func (c *Client) Run(ctx context.Context) error {
 	if addr == "" {
 		addr = "irc.chat.twitch.tv:6697"
 	}
-	dialer := &net.Dialer{Timeout: 10 * time.Second}
-
-	var conn net.Conn
-	var err error
-	if strings.Contains(addr, "irc.chat.twitch.tv") || strings.HasSuffix(addr, ":6697") {
-		tlsDialer := &tls.Dialer{NetDialer: dialer}
-		conn, err = tlsDialer.DialContext(ctx, "tcp", addr)
-	} else {
-		conn, err = dialer.DialContext(ctx, "tcp", addr)
+	dial := c.Dial
+	if dial == nil {
+		dial = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
 	}
+
+	dialCtx, cancelDial := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelDial()
+
+	conn, err := dial(dialCtx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
+	}
+	if strings.Contains(addr, "irc.chat.twitch.tv") || strings.HasSuffix(addr, ":6697") {
+		host, _, splitErr := net.SplitHostPort(addr)
+		if splitErr != nil {
+			host = addr
+		}
+		tlsConn := tls.Client(conn, &tls.Config{ServerName: host})
+		if err := tlsConn.HandshakeContext(dialCtx); err != nil {
+			conn.Close()
+			return fmt.Errorf("tls handshake: %w", err)
+		}
+		conn = tlsConn
 	}
 
 	c.mu.Lock()

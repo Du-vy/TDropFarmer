@@ -10,6 +10,61 @@ import (
 	"time"
 )
 
+func TestClientUsesCustomDial(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer listener.Close()
+
+	handshakeChan := make(chan string, 3)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		reader := bufio.NewReader(conn)
+		for i := 0; i < 3; i++ {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return
+			}
+			handshakeChan <- line
+		}
+	}()
+
+	dialUsed := make(chan struct{}, 1)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	client := NewClient("myuser", "mytoken", "streamerchannel", logger, nil)
+	client.Addr = listener.Addr().String()
+	client.Dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dialUsed <- struct{}{}
+		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, addr)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = client.Run(ctx)
+	}()
+
+	select {
+	case <-dialUsed:
+	case <-time.After(1 * time.Second):
+		t.Fatal("custom dial function was not used")
+	}
+
+	select {
+	case line := <-handshakeChan:
+		if line != "PASS oauth:mytoken\r\n" {
+			t.Errorf("unexpected first handshake line: %q", line)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("timeout waiting for handshake over custom dial connection")
+	}
+}
+
 func TestClientMentionDetection(t *testing.T) {
 	// Start local mock IRC server
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

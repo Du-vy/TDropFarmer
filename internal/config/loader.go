@@ -81,6 +81,7 @@ func ApplyDefaults(cfg *Config) {
 }
 
 func Normalize(cfg *Config) {
+	cfg.Network.ProxyURL = strings.TrimSpace(cfg.Network.ProxyURL)
 	cfg.Account.Username = normalizeLogin(cfg.Account.Username)
 	for i := range cfg.Streamers {
 		cfg.Streamers[i].Login = normalizeLogin(cfg.Streamers[i].Login)

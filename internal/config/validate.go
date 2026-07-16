@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/Du-vy/TDropFarmer/internal/netutil"
 )
 
 var loginPattern = regexp.MustCompile(`^[a-z0-9_]{4,25}$`)
@@ -59,6 +61,11 @@ func Validate(cfg Config) error {
 	}
 	if cfg.Notifications.Webhook.Enabled && cfg.Notifications.Webhook.URL == "" {
 		errs = append(errs, fmt.Errorf("notifications.webhook.url must be set when webhook is enabled"))
+	}
+	if cfg.Network.ProxyURL != "" {
+		if _, err := netutil.ParseProxyURL(cfg.Network.ProxyURL); err != nil {
+			errs = append(errs, fmt.Errorf("network.proxy_url: %w", err))
+		}
 	}
 
 	return errors.Join(errs...)

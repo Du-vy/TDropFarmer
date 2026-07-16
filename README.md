@@ -101,6 +101,35 @@ Here is an overview of the key configuration fields:
 | `storage.path` | String | Path to store local data, authorization tokens, and caches (default: `./data`). |
 | `logging.level` | String | Logging level (`debug`, `info`, `warn`, `error`). |
 | `notifications` | Object | Discord / Custom Webhook integration settings. |
+| `network.proxy_url` | String | Optional SOCKS5 proxy for all Twitch traffic (e.g. `socks5://warp:1080`). Empty (default) means direct connection. |
+
+---
+
+## Optional: Route Traffic Through Cloudflare WARP (Docker)
+
+TDropFarmer can route **all** its Twitch traffic (GraphQL, Helix, auth, watch telemetry, and IRC chat) through a SOCKS5 proxy. This is entirely opt-in: without it, the bot connects directly exactly as before.
+
+The bundled [docker-compose.warp.yml](docker-compose.warp.yml) overlay adds a [Cloudflare WARP](https://github.com/cmj2002/warp-docker) sidecar container that exposes a SOCKS5 proxy at `warp:1080`. To enable it:
+
+1. Point the bot at the sidecar in `config.json`:
+   ```json
+   "network": {
+     "proxy_url": "socks5://warp:1080"
+   }
+   ```
+2. Start with the overlay layered on top of the base compose file:
+   ```sh
+   docker compose -f docker-compose.yml -f docker-compose.warp.yml up -d
+   ```
+
+The bot waits for the WARP tunnel to become healthy before starting. Keep both steps in sync: the `proxy_url` makes the bot use the tunnel, the overlay provides it.
+
+Outside Docker, `network.proxy_url` accepts any SOCKS5 proxy, e.g. `socks5://127.0.0.1:1080`.
+
+Notes:
+- Only `socks5://` / `socks5h://` proxies are supported. An HTTP proxy could not tunnel the IRC chat connection, which would leave your account connecting from two different IPs at once.
+- Discord/webhook notifications are intentionally **not** proxied; only Twitch-bound traffic goes through the tunnel.
+- Twitch sees Cloudflare egress IPs when WARP is active. This usually works fine, but shared datacenter IPs may occasionally be throttled or challenged — use at your own discretion.
 
 ---
 

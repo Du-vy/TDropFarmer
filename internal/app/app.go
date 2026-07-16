@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/Du-vy/TDropFarmer/internal/config"
 	"github.com/Du-vy/TDropFarmer/internal/domain"
 	"github.com/Du-vy/TDropFarmer/internal/engine"
+	"github.com/Du-vy/TDropFarmer/internal/netutil"
 	"github.com/Du-vy/TDropFarmer/internal/notify"
 	"github.com/Du-vy/TDropFarmer/internal/store"
 	"github.com/Du-vy/TDropFarmer/internal/twitch"
@@ -48,12 +50,17 @@ type App struct {
 	// rotatedStreamerCooldowns is guarded by streamersMu.
 	rotatedStreamerCooldowns map[string]time.Time
 	notifier                 *notify.DiscordNotifier
-	watchCreditMu            sync.Mutex
-	watchCreditProgress      map[string]int
-	lastWatchCreditAt        time.Time
-	watchCreditAlerted       bool
-	auxiliaryWatchDisabled   bool
-	auxiliaryWatchCancel     context.CancelFunc
+	// httpClient is shared by every Twitch-bound HTTP client so an optional
+	// proxy applies to all of them; chatDial does the same for the raw IRC
+	// connection (nil = direct). Both are set once at the start of Run.
+	httpClient             *http.Client
+	chatDial               netutil.DialContextFunc
+	watchCreditMu          sync.Mutex
+	watchCreditProgress    map[string]int
+	lastWatchCreditAt      time.Time
+	watchCreditAlerted     bool
+	auxiliaryWatchDisabled bool
+	auxiliaryWatchCancel   context.CancelFunc
 }
 
 type dropProgressStallState struct {
@@ -146,10 +153,29 @@ func (a *App) Run(ctx context.Context) error {
 		slog.Bool("dry_run", a.config.Features.DryRunEnabled()),
 	)
 
+	httpClient, err := netutil.NewHTTPClient(a.config.Network.ProxyURL, 20*time.Second)
+	if err != nil {
+		return fmt.Errorf("configure proxy: %w", err)
+	}
+	chatDial, err := netutil.NewDialContext(a.config.Network.ProxyURL)
+	if err != nil {
+		return fmt.Errorf("configure proxy: %w", err)
+	}
+	a.httpClient = httpClient
+	a.chatDial = chatDial
+	if a.config.Network.ProxyURL != "" {
+		proxyLabel := a.config.Network.ProxyURL
+		if parsed, err := netutil.ParseProxyURL(a.config.Network.ProxyURL); err == nil {
+			proxyLabel = parsed.Redacted()
+		}
+		a.logger.Info("routing all Twitch traffic through proxy", slog.String("proxy_url", proxyLabel))
+	}
+
 	flow := auth.DeviceFlow{
-		ClientID: a.config.Auth.ClientID,
-		Scopes:   a.config.Auth.Scopes,
-		Store:    a.tokenStore,
+		ClientID:   a.config.Auth.ClientID,
+		Scopes:     a.config.Auth.Scopes,
+		HTTPClient: httpClient,
+		Store:      a.tokenStore,
 	}
 	token, validation, err := flow.ValidToken(ctx)
 	if err != nil {
@@ -186,6 +212,7 @@ func (a *App) Run(ctx context.Context) error {
 	helixClient := twitch.Client{
 		ClientID:    a.config.Auth.ClientID,
 		AccessToken: token.AccessToken,
+		HTTPClient:  httpClient,
 	}
 	streamers, err := helixClient.ResolveStreamers(ctx, streamerLogins(a.config.Streamers))
 	if err != nil {
@@ -205,6 +232,7 @@ func (a *App) Run(ctx context.Context) error {
 	gqlClient := gql.Client{
 		ClientID:    a.config.Auth.ClientID,
 		AccessToken: token.AccessToken,
+		HTTPClient:  httpClient,
 		// Every derived client copies this struct, so the shared limiter
 		// bounds the account-wide GQL request rate.
 		Limiter: gql.NewRateLimiter(5, time.Second),
@@ -1353,7 +1381,8 @@ func (a *App) runMinuteWatched(ctx context.Context, eng *engine.Engine, gqlClien
 	// generate, so we use the Android App Client ID which works without them.
 	fetcher := playback.TokenFetcher{Client: gqlClient}
 	watcher := playback.NewWatcher(fetcher)
-	spadeEndpoint, err := playback.DiscoverSpadeURL(ctx)
+	watcher.SetHTTPClient(a.httpClient)
+	spadeEndpoint, err := playback.DiscoverSpadeURL(ctx, a.httpClient)
 	if err != nil {
 		spadeEndpoint = playback.DefaultSpadeURL
 		a.logger.Warn("spade endpoint discovery failed; using fallback", slog.String("error", err.Error()))
@@ -1729,6 +1758,9 @@ func (a *App) startChat(ctx context.Context, eng *engine.Engine, login string, t
 			Time:     time.Now().UTC(),
 		})
 	})
+	// Chat must share the proxy egress with the HTTP clients: a split would
+	// show the account connecting from two IPs at once.
+	client.Dial = a.chatDial
 
 	go func() {
 		defer func() {
