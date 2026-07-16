@@ -50,6 +50,8 @@ type App struct {
 	// rotatedStreamerCooldowns is guarded by streamersMu.
 	rotatedStreamerCooldowns map[string]time.Time
 	notifier                 *notify.DiscordNotifier
+	botAvatarURL            string
+	botDisplayName          string
 	// httpClient is shared by every Twitch-bound HTTP client so an optional
 	// proxy applies to all of them; chatDial does the same for the raw IRC
 	// connection (nil = direct). Both are set once at the start of Run.
@@ -214,6 +216,17 @@ func (a *App) Run(ctx context.Context) error {
 		AccessToken: token.AccessToken,
 		HTTPClient:  httpClient,
 	}
+	botUsers, err := helixClient.ResolveUsers(ctx, []string{validation.Login})
+	if err != nil {
+		a.logger.Warn("failed to resolve bot user profile details", slog.String("error", err.Error()))
+	} else if len(botUsers) > 0 {
+		a.botAvatarURL = botUsers[0].ProfileImageURL
+		a.botDisplayName = botUsers[0].DisplayName
+		a.logger.Info("resolved bot Twitch profile",
+			slog.String("display_name", a.botDisplayName),
+			slog.String("avatar_url", a.botAvatarURL),
+		)
+	}
 	streamers, err := helixClient.ResolveStreamers(ctx, streamerLogins(a.config.Streamers))
 	if err != nil {
 		return fmt.Errorf("resolve streamers: %w", err)
@@ -303,7 +316,14 @@ func (a *App) Run(ctx context.Context) error {
 	var notifier *notify.DiscordNotifier
 	if a.config.Notifications.Discord.Enabled {
 		notifier = notify.NewDiscord(a.config.Notifications.Discord.WebhookURL)
-		a.logger.Info("discord notifier configured")
+		if a.botDisplayName != "" {
+			notifier.Username = "Twitch: " + a.botDisplayName
+		}
+		notifier.AvatarURL = a.botAvatarURL
+		a.logger.Info("discord notifier configured",
+			slog.String("username", notifier.Username),
+			slog.String("avatar_url", a.botAvatarURL),
+		)
 	}
 	// Set before the goroutines below start: the watch-credit watchdog inside
 	// pollDrops reads it.

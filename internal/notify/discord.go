@@ -12,6 +12,8 @@ import (
 type DiscordNotifier struct {
 	WebhookURL string
 	HTTPClient *http.Client
+	Username   string
+	AvatarURL  string
 }
 
 type EmbedField struct {
@@ -47,9 +49,10 @@ type Embed struct {
 }
 
 type WebhookPayload struct {
-	Content  string  `json:"content,omitempty"`
-	Embeds   []Embed `json:"embeds,omitempty"`
-	Username string  `json:"username,omitempty"`
+	Content   string  `json:"content,omitempty"`
+	Embeds    []Embed `json:"embeds,omitempty"`
+	Username  string  `json:"username,omitempty"`
+	AvatarURL string  `json:"avatar_url,omitempty"`
 }
 
 func NewDiscord(webhookURL string) *DiscordNotifier {
@@ -62,6 +65,13 @@ func NewDiscord(webhookURL string) *DiscordNotifier {
 func (n *DiscordNotifier) Send(ctx context.Context, payload WebhookPayload) error {
 	if n.WebhookURL == "" {
 		return fmt.Errorf("discord webhook url is empty")
+	}
+
+	if payload.Username == "" && n.Username != "" {
+		payload.Username = n.Username
+	}
+	if payload.AvatarURL == "" && n.AvatarURL != "" {
+		payload.AvatarURL = n.AvatarURL
 	}
 
 	body, err := json.Marshal(payload)
