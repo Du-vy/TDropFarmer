@@ -1202,11 +1202,6 @@ func (a *App) setCurrentFarmingCampaign(campaignID string) bool {
 	return true
 }
 
-func (a *App) currentFarmingCampaignSnapshot() string {
-	a.activeGamesMu.RLock()
-	defer a.activeGamesMu.RUnlock()
-	return a.currentFarmingCampaign
-}
 
 func (a *App) farmingCampaignForGame(gameName string) (campaignName, campaignKey, gameImageURL string, dropList []string) {
 	a.dropsMu.RLock()

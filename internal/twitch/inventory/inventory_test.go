@@ -467,7 +467,7 @@ func TestGetActiveCampaignGamesSkipsCampaignWithoutCompletableDrops(t *testing.T
 			]
 		}
 	}`)
-	details := []byte(fmt.Sprintf(`{
+	details := fmt.Appendf(nil, `{
 		"user": {"dropCampaign": {
 			"id": "late",
 			"status": "ACTIVE",
@@ -479,7 +479,7 @@ func TestGetActiveCampaignGamesSkipsCampaignWithoutCompletableDrops(t *testing.T
 				{"requiredMinutesWatched": 60, "self": {"hasPreconditionsMet": true, "isClaimed": false}}
 			]
 		}}
-	}`, startAt, endAt))
+	}`, startAt, endAt)
 
 	client := campaignGamesGQLClient{
 		dashboard: dashboard,
@@ -509,7 +509,7 @@ func TestGetActiveCampaignGamesAllowsCampaignWithCompletableDropWindow(t *testin
 			]
 		}
 	}`)
-	details := []byte(fmt.Sprintf(`{
+	details := fmt.Appendf(nil, `{
 		"user": {"dropCampaign": {
 			"id": "bdo",
 			"status": "ACTIVE",
@@ -532,7 +532,7 @@ func TestGetActiveCampaignGamesAllowsCampaignWithCompletableDropWindow(t *testin
 				}
 			]
 		}}
-	}`, startAt, laterEndAt, startAt, soonEndAt, startAt, laterEndAt))
+	}`, startAt, laterEndAt, startAt, soonEndAt, startAt, laterEndAt)
 
 	client := campaignGamesGQLClient{
 		dashboard: dashboard,
