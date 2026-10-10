@@ -136,9 +136,13 @@ type ConsoleHandler struct {
 }
 
 func NewConsoleHandler(w io.Writer, level slog.Level) *ConsoleHandler {
+	cw, ok := w.(*ColorWriter)
+	if !ok {
+		cw = NewColorWriter(w)
+	}
 	return &ConsoleHandler{
 		level:  level,
-		writer: w,
+		writer: cw,
 	}
 }
 

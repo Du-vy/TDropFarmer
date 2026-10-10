@@ -242,8 +242,11 @@ func (c Client) ClaimDrop(ctx context.Context, dropInstanceID string) (bool, err
 	}
 
 	status := data.ClaimDropRewards.Status
-	if status == "ELIGIBLE_FOR_ALL" || status == "DROP_INSTANCE_ALREADY_CLAIMED" {
+	if status == "ELIGIBLE_FOR_ALL" {
 		return true, nil
+	}
+	if status == "DROP_INSTANCE_ALREADY_CLAIMED" {
+		return false, nil
 	}
 
 	return false, fmt.Errorf("claim drop failed with status: %s", status)

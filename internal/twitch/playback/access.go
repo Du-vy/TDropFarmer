@@ -173,28 +173,25 @@ func (w *Watcher) sendWatched(ctx context.Context, streamer domain.Streamer, use
 		return fmt.Errorf("parse base URL: %w", err)
 	}
 
-	// Find the latest media segment URL (skip any lines starting with #)
-	var segmentURL string
-	for i := len(mediaLines) - 1; i >= 0; i-- {
-		line := mediaLines[i]
-		if !strings.HasPrefix(line, "#") {
-			segmentURL = line
-			break
+	// Resolve and HEAD all media segment URLs in the playlist (matching modern miner behavior)
+	var segmentCount int
+	for _, line := range mediaLines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
 		}
+		u, err := url.Parse(trimmed)
+		if err != nil {
+			continue
+		}
+		resolvedURL := base.ResolveReference(u).String()
+		if err := w.httpHead(ctx, resolvedURL); err != nil {
+			return fmt.Errorf("head media segment: %w", err)
+		}
+		segmentCount++
 	}
-	if segmentURL == "" {
+	if segmentCount == 0 {
 		return errNoMedia
-	}
-
-	// Resolve relative URLs if necessary
-	u, err := url.Parse(segmentURL)
-	if err != nil {
-		return fmt.Errorf("parse segment URL: %w", err)
-	}
-	resolvedURL := base.ResolveReference(u).String()
-
-	if err := w.httpHead(ctx, resolvedURL); err != nil {
-		return fmt.Errorf("head media segment: %w", err)
 	}
 
 	if err := w.sendSpadeEvent(ctx, streamer, userID, includeDropMetadata); err != nil {
@@ -269,12 +266,18 @@ func (w *Watcher) httpHead(ctx context.Context, target string) error {
 
 func encodeSpadePayload(streamer domain.Streamer, userID string, includeDropMetadata bool) (string, error) {
 	properties := map[string]any{
-		"broadcast_id": streamer.BroadcastID,
-		"channel_id":   streamer.ID,
-		"player":       "site",
-		"user_id":      userID,
-		"live":         true,
-		"channel":      streamer.Login,
+		"broadcast_id":   streamer.BroadcastID,
+		"channel_id":     streamer.ID,
+		"channel":        streamer.Login,
+		"client_time":    time.Now().UTC().Format(time.RFC3339),
+		"hidden":         false,
+		"is_live":        true,
+		"live":           true,
+		"logged_in":      true,
+		"minutes_logged": 1,
+		"muted":          false,
+		"player":         "site",
+		"user_id":        userID,
 	}
 	if includeDropMetadata {
 		properties["game"] = streamer.GameName

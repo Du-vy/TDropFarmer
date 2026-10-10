@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -14,6 +15,8 @@ type DiscordNotifier struct {
 	HTTPClient *http.Client
 	Username   string
 	AvatarURL  string
+	mu         sync.Mutex
+	lastSend   time.Time
 }
 
 type EmbedField struct {
@@ -67,6 +70,18 @@ func (n *DiscordNotifier) Send(ctx context.Context, payload WebhookPayload) erro
 		return fmt.Errorf("discord webhook url is empty")
 	}
 
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	// Rate limit: ensure at least 1 second between webhook calls
+	if elapsed := time.Since(n.lastSend); elapsed < time.Second {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second - elapsed):
+		}
+	}
+
 	if payload.Username == "" && n.Username != "" {
 		payload.Username = n.Username
 	}
@@ -79,25 +94,46 @@ func (n *DiscordNotifier) Send(ctx context.Context, payload WebhookPayload) erro
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.WebhookURL, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
 	client := n.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
+	for attempt := 0; attempt < 2; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.WebhookURL, bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("discord webhook returned status %d", resp.StatusCode)
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		n.lastSend = time.Now()
+
+		if resp.StatusCode == http.StatusTooManyRequests && attempt == 0 {
+			resp.Body.Close()
+			// Handle 429 rate limit backoff
+			retryDelay := 2 * time.Second
+			if retryHeader := resp.Header.Get("Retry-After"); retryHeader != "" {
+				if d, parseErr := time.ParseDuration(retryHeader + "s"); parseErr == nil && d > 0 && d <= 5*time.Second {
+					retryDelay = d
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(retryDelay):
+				continue
+			}
+		}
+
+		resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return fmt.Errorf("discord webhook returned status %d", resp.StatusCode)
+		}
+		return nil
 	}
 
 	return nil

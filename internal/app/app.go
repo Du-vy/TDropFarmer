@@ -18,6 +18,7 @@ import (
 	"github.com/Du-vy/TDropFarmer/internal/config"
 	"github.com/Du-vy/TDropFarmer/internal/domain"
 	"github.com/Du-vy/TDropFarmer/internal/engine"
+	"github.com/Du-vy/TDropFarmer/internal/logging"
 	"github.com/Du-vy/TDropFarmer/internal/netutil"
 	"github.com/Du-vy/TDropFarmer/internal/notify"
 	"github.com/Du-vy/TDropFarmer/internal/store"
@@ -57,6 +58,8 @@ type App struct {
 	// connection (nil = direct). Both are set once at the start of Run.
 	httpClient             *http.Client
 	chatDial               netutil.DialContextFunc
+	claimedInstancesMu     sync.RWMutex
+	claimedInstances       map[string]bool
 	watchCreditMu          sync.Mutex
 	watchCreditProgress    map[string]int
 	lastWatchCreditAt      time.Time
@@ -103,7 +106,7 @@ func randomDuration(min, max time.Duration) time.Duration {
 
 const (
 	targetGameDiscoveryRefreshInterval = 30 * time.Minute
-	dropProgressStallUnchangedPolls    = 2
+	dropProgressStallUnchangedPolls    = 5
 
 	// Claims, drop progress, and stall detection ride the inventory poll, so
 	// it stays fast. The campaign-directory scan only discovers new work and
@@ -124,9 +127,11 @@ const (
 	// actively watching a drop streamer, before the watchdog raises an alert.
 	watchCreditStallThreshold = time.Hour
 	watchTelemetryTick        = 5 * time.Second
-	auxiliaryPulseOffset      = 30 * time.Second
-	primaryPulseSafetyMargin  = 5 * time.Second
-	minimumAuxiliaryWindow    = 10 * time.Second
+	watchTelemetryMinInterval = 18 * time.Second
+	watchTelemetryMaxInterval = 22 * time.Second
+	auxiliaryPulseOffset      = 5 * time.Second
+	primaryPulseSafetyMargin  = 2 * time.Second
+	minimumAuxiliaryWindow    = 3 * time.Second
 	primaryPulsesBeforeAux    = 2
 	maxAuxiliaryFailures      = 3
 	auxiliaryFailureBackoff   = 15 * time.Minute
@@ -135,11 +140,36 @@ const (
 
 func New(cfg config.Config, logger *slog.Logger, tokenStore auth.TokenStore) *App {
 	return &App{
-		config:      cfg,
-		logger:      logger,
-		tokenStore:  tokenStore,
-		chatCancels: make(map[string]context.CancelFunc),
+		config:           cfg,
+		logger:           logger,
+		tokenStore:       tokenStore,
+		chatCancels:      make(map[string]context.CancelFunc),
+		claimedInstances: make(map[string]bool),
 	}
+}
+
+func (a *App) isDropInstanceClaimed(instanceID string) bool {
+	if instanceID == "" {
+		return false
+	}
+	a.claimedInstancesMu.RLock()
+	defer a.claimedInstancesMu.RUnlock()
+	if a.claimedInstances == nil {
+		return false
+	}
+	return a.claimedInstances[instanceID]
+}
+
+func (a *App) markDropInstanceClaimed(instanceID string) {
+	if instanceID == "" {
+		return
+	}
+	a.claimedInstancesMu.Lock()
+	defer a.claimedInstancesMu.Unlock()
+	if a.claimedInstances == nil {
+		a.claimedInstances = make(map[string]bool)
+	}
+	a.claimedInstances[instanceID] = true
 }
 
 func (a *App) Run(ctx context.Context) error {
@@ -147,6 +177,9 @@ func (a *App) Run(ctx context.Context) error {
 		"\x1b[1;33m              T D R O P   F A R M E R\x1b[0m\n" +
 		"    Twitch Drops & Channel Points Farmer Bot in Go\n" +
 		"\x1b[1;36m============================================================\x1b[0m\n\n"
+	if !logging.SupportsColor() {
+		banner = logging.StripANSI(banner)
+	}
 	fmt.Print(banner)
 
 	a.logger.Info("starting tdropfarmer",
@@ -570,6 +603,13 @@ func (a *App) checkAndClaimDropsWithCampaignRefresh(ctx context.Context, eng *en
 		}
 
 		if drop.IsClaimable {
+			if a.isDropInstanceClaimed(drop.DropInstanceID) {
+				drops[i].IsClaimed = true
+				drops[i].IsClaimable = false
+				drops[i].IsEarnable = false
+				continue
+			}
+
 			a.logger.Info("claiming drop",
 				slog.String("id", drop.ID),
 				slog.String("name", drop.Name),
@@ -586,10 +626,12 @@ func (a *App) checkAndClaimDropsWithCampaignRefresh(ctx context.Context, eng *en
 					Payload:  drop,
 					Time:     time.Now().UTC(),
 				})
+				a.markDropInstanceClaimed(drop.DropInstanceID)
 				continue
 			}
 
 			success, err := invClient.ClaimDrop(ctx, drop.DropInstanceID)
+			a.markDropInstanceClaimed(drop.DropInstanceID)
 			if err != nil {
 				a.logger.Warn("claim drop failed",
 					slog.String("id", drop.ID),
@@ -615,6 +657,17 @@ func (a *App) checkAndClaimDropsWithCampaignRefresh(ctx context.Context, eng *en
 					Payload:  drop,
 					Time:     time.Now().UTC(),
 				})
+			} else {
+				refreshActiveGames = true
+				drops[i].IsClaimed = true
+				drops[i].IsClaimable = false
+				drops[i].IsEarnable = false
+				drop = drops[i]
+				a.logger.Info("drop already claimed or requires account link",
+					slog.String("id", drop.ID),
+					slog.String("name", drop.Name),
+					slog.String("instance_id", drop.DropInstanceID),
+				)
 			}
 		}
 	}
@@ -1398,7 +1451,7 @@ func indexStreamsByUserID(streams []twitch.StreamInfo) map[string]twitch.StreamI
 func (a *App) runMinuteWatched(ctx context.Context, eng *engine.Engine, gqlClient gql.Client) {
 	// Use the same Client ID and auth token as the rest of the app.
 	// The Browser Client ID requires Client-Integrity tokens that we don't
-	// generate, so we use the Android App Client ID which works without them.
+	// generate, so we use the Android TV Client ID which works without them.
 	fetcher := playback.TokenFetcher{Client: gqlClient}
 	watcher := playback.NewWatcher(fetcher)
 	watcher.SetHTTPClient(a.httpClient)
@@ -1450,7 +1503,7 @@ func (a *App) processWatchTelemetry(ctx context.Context, eng *engine.Engine, sen
 	}
 
 	if primary != nil && !now.Before(state.nextPrimaryPulse) {
-		state.nextPrimaryPulse = now.Add(randomDuration(55*time.Second, 65*time.Second))
+		state.nextPrimaryPulse = now.Add(randomDuration(watchTelemetryMinInterval, watchTelemetryMaxInterval))
 		if err := sender.SendMinuteWatched(ctx, *primary, a.userID); err != nil {
 			state.primarySuccessfulPulses = 0
 			a.pauseAuxiliaryWatch(state, now, "primary_failed")

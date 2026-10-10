@@ -106,6 +106,7 @@ func (m mockInventoryGQLClient) Do(ctx context.Context, req gql.Request) (gql.Re
 type claimFlowGQLClient struct {
 	inventoryResponse []byte
 	claimResponse     []byte
+	claimCalls        *int
 }
 
 type campaignScanCountingClient struct {
@@ -129,6 +130,9 @@ func (m claimFlowGQLClient) Do(ctx context.Context, req gql.Request) (gql.Respon
 	case "Inventory":
 		return gql.Response{Data: m.inventoryResponse}, nil
 	case "DropsPage_ClaimDropRewards":
+		if m.claimCalls != nil {
+			*m.claimCalls++
+		}
 		return gql.Response{Data: m.claimResponse}, nil
 	default:
 		return gql.Response{}, nil
@@ -982,8 +986,9 @@ func TestRotateStalledDropStreamerRemovesDynamicCandidate(t *testing.T) {
 		},
 	}
 
-	app.rotateStalledDropStreamerIfNeeded(eng, drops)
-	app.rotateStalledDropStreamerIfNeeded(eng, drops)
+	for i := 0; i < dropProgressStallUnchangedPolls; i++ {
+		app.rotateStalledDropStreamerIfNeeded(eng, drops)
+	}
 	if len(app.dynamicStreamers) != 1 {
 		t.Fatalf("dynamic streamer removed too early: %v", app.dynamicStreamers)
 	}
@@ -1008,8 +1013,9 @@ func TestRotateStalledDropStreamerRotatesWhenGameMissingFromInventory(t *testing
 		},
 	}
 
-	app.rotateStalledDropStreamerIfNeeded(eng, drops)
-	app.rotateStalledDropStreamerIfNeeded(eng, drops)
+	for i := 0; i < dropProgressStallUnchangedPolls; i++ {
+		app.rotateStalledDropStreamerIfNeeded(eng, drops)
+	}
 	if len(app.dynamicStreamers) != 1 {
 		t.Fatalf("dynamic streamer removed too early: %v", app.dynamicStreamers)
 	}
@@ -1155,12 +1161,12 @@ func TestWatchTelemetryEstablishesPrimaryBeforeAuxiliary(t *testing.T) {
 		t.Fatalf("after first primary pulse: %+v", state)
 	}
 
-	app.processWatchTelemetry(context.Background(), eng, sender, &state, started.Add(65*time.Second))
+	app.processWatchTelemetry(context.Background(), eng, sender, &state, started.Add(23*time.Second))
 	if state.primarySuccessfulPulses != 2 || state.auxiliaryLogin != "" {
 		t.Fatalf("after second primary pulse: %+v", state)
 	}
 
-	app.processWatchTelemetry(context.Background(), eng, sender, &state, started.Add(70*time.Second))
+	app.processWatchTelemetry(context.Background(), eng, sender, &state, started.Add(25*time.Second))
 	if state.auxiliaryLogin != "static" {
 		t.Fatalf("expected static auxiliary after handshake, got %+v", state)
 	}
@@ -1168,7 +1174,7 @@ func TestWatchTelemetryEstablishesPrimaryBeforeAuxiliary(t *testing.T) {
 		t.Fatalf("auxiliary sent before offset: %v", sender.calls)
 	}
 
-	app.processWatchTelemetry(context.Background(), eng, sender, &state, started.Add(101*time.Second))
+	app.processWatchTelemetry(context.Background(), eng, sender, &state, started.Add(32*time.Second))
 	want := []string{"primary:dynamic", "primary:dynamic", "auxiliary:static"}
 	if len(sender.calls) != len(want) {
 		t.Fatalf("calls = %v, want %v", sender.calls, want)
@@ -1481,3 +1487,56 @@ func TestSortActiveGamesKeepsPriorityGameWithoutDeadlineInfo(t *testing.T) {
 		t.Fatalf("expected game without deadline info to be kept, got %v", sorted)
 	}
 }
+
+func TestCheckAndClaimDropsDeduplicatesAlreadyClaimedDrops(t *testing.T) {
+	app := &App{
+		config: config.Config{
+			Features: config.FeatureConfig{
+				ClaimDrops: config.Bool(true),
+			},
+		},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	eng := engine.New(app.config, nil, logger)
+
+	var claimCalls int
+	invClient := inventory.Client{Client: claimFlowGQLClient{
+		inventoryResponse: []byte(`{"currentUser":{"inventory":{"dropCampaignsInProgress":[
+			{
+				"id":"unlinked-campaign",
+				"name":"Unlinked Campaign",
+				"game":{"name":"Aion 2"},
+				"timeBasedDrops":[{
+					"id":"unlinked-drop",
+					"name":"Adorable Young Elim x1",
+					"requiredMinutesWatched":60,
+					"self":{"currentMinutesWatched":60,"hasPreconditionsMet":true,"dropInstanceID":"instance-elim","isClaimed":false}
+				}]
+			}
+		]}}}`),
+		claimResponse: []byte(`{"claimDropRewards":{"status":"DROP_INSTANCE_ALREADY_CLAIMED"}}`),
+		claimCalls:    &claimCalls,
+	}}
+
+	// First poll: sees claimable drop, attempts claim once, Twitch returns DROP_INSTANCE_ALREADY_CLAIMED.
+	app.checkAndClaimDropsWithCampaignRefresh(context.Background(), eng, invClient, false)
+
+	if claimCalls != 1 {
+		t.Fatalf("expected exactly 1 claim call on first poll, got %d", claimCalls)
+	}
+	if !app.isDropInstanceClaimed("instance-elim") {
+		t.Fatal("expected instance-elim to be marked in claimedInstances map")
+	}
+	if len(app.lastDrops) == 0 || !app.lastDrops[0].IsClaimed || app.lastDrops[0].IsClaimable {
+		t.Fatalf("expected drop to be marked claimed and not claimable, got %+v", app.lastDrops)
+	}
+
+	// Second poll: dropInstanceID is cached as claimed; ClaimDrop must NOT be called again.
+	app.checkAndClaimDropsWithCampaignRefresh(context.Background(), eng, invClient, false)
+
+	if claimCalls != 1 {
+		t.Fatalf("expected claimCalls to remain 1 on second poll (deduplicated), got %d", claimCalls)
+	}
+}
+

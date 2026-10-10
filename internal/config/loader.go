@@ -29,7 +29,7 @@ func Load(path string) (Config, error) {
 
 func ApplyDefaults(cfg *Config) {
 	if cfg.Auth.ClientID == "" {
-		cfg.Auth.ClientID = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp"
+		cfg.Auth.ClientID = "ue6666qo983tsx6so1t0vnawi233wa"
 	}
 	if len(cfg.Auth.Scopes) == 0 {
 		cfg.Auth.Scopes = []string{
