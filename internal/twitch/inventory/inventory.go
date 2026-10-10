@@ -3,6 +3,7 @@ package inventory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -248,8 +249,37 @@ func (c Client) ClaimDrop(ctx context.Context, dropInstanceID string) (bool, err
 	if status == "DROP_INSTANCE_ALREADY_CLAIMED" {
 		return false, nil
 	}
+	// Twitch now requires the game account to be connected before claiming.
+	// Return a distinguishable error so callers can suppress retries.
+	if isAccountNotConnectedStatus(status) {
+		return false, fmt.Errorf("%w: %s", ErrAccountNotConnected, status)
+	}
 
 	return false, fmt.Errorf("claim drop failed with status: %s", status)
+}
+
+// ErrAccountNotConnected is returned by ClaimDrop when the user's game
+// account is not linked on Twitch. Callers can use errors.Is to suppress
+// retries for the affected game.
+var ErrAccountNotConnected = errors.New("game account not connected")
+
+func isAccountNotConnectedStatus(status string) bool {
+	switch status {
+	case "ACCOUNT_NOT_CONNECTED",
+		"NOT_ELIGIBLE",
+		"PRECONDITIONS_NOT_MET",
+		"ACCOUNT_LINK_REQUIRED",
+		"DROP_INSTANCE_ACCOUNT_NOT_CONNECTED":
+		return true
+	}
+	upper := strings.ToUpper(status)
+	if strings.Contains(upper, "ACCOUNT") && strings.Contains(upper, "CONNECT") {
+		return true
+	}
+	if strings.Contains(upper, "ACCOUNT") && strings.Contains(upper, "LINK") {
+		return true
+	}
+	return false
 }
 
 func persistedQuery(hash string) map[string]any {
@@ -508,7 +538,10 @@ func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, []string,
 			continue
 		}
 
-		if detail != nil && detail.User != nil && detail.User.DropCampaign != nil {
+		// Only add drops to the farming list when the game account is
+		// connected. Without a linked account Twitch will reject every
+		// claim, so farming those minutes is wasted work.
+		if isConnected && detail != nil && detail.User != nil && detail.User.DropCampaign != nil {
 			cCampaign := detail.User.DropCampaign
 			gameImageURL := cleanTwitchImageURL(campaign.Game.BoxArtURL)
 			now := time.Now().UTC()
@@ -582,7 +615,14 @@ func (c Client) GetActiveCampaignGames(ctx context.Context) ([]string, []string,
 		}
 	}
 
-	return connectedGames, unconnectedGames, allCampaignDrops, nil
+	var finalUnconnected []string
+	for _, game := range unconnectedGames {
+		if !seenConnected[strings.ToLower(game)] {
+			finalUnconnected = append(finalUnconnected, game)
+		}
+	}
+
+	return connectedGames, finalUnconnected, allCampaignDrops, nil
 }
 
 func (c Client) getCampaignDetails(ctx context.Context, campaignID string) (*campaignDetailsResponse, error) {

@@ -3,6 +3,7 @@ package inventory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -318,6 +319,29 @@ func TestClaimDropFailed(t *testing.T) {
 
 	if success {
 		t.Errorf("expected success to be false")
+	}
+}
+
+func TestClaimDropAccountNotConnected(t *testing.T) {
+	for _, status := range []string{"ACCOUNT_NOT_CONNECTED", "NOT_ELIGIBLE", "PRECONDITIONS_NOT_MET", "ACCOUNT_LINK_REQUIRED"} {
+		mockResponse := fmt.Sprintf(`{"claimDropRewards":{"status":"%s"}}`, status)
+		client := &recordingGQLClient{
+			response: gql.Response{
+				Data: json.RawMessage(mockResponse),
+			},
+		}
+		inventoryClient := Client{Client: client}
+
+		success, err := inventoryClient.ClaimDrop(context.Background(), "instance-unconnected")
+		if err == nil {
+			t.Fatalf("status %s: expected error, got nil", status)
+		}
+		if !errors.Is(err, ErrAccountNotConnected) {
+			t.Fatalf("status %s: expected ErrAccountNotConnected, got %v", status, err)
+		}
+		if success {
+			t.Errorf("status %s: expected success to be false", status)
+		}
 	}
 }
 

@@ -360,7 +360,7 @@ func TestSortActiveGames(t *testing.T) {
 	}
 }
 
-func TestSortActiveGamesPrioritizesConnectedOverUnconnected(t *testing.T) {
+func TestSortActiveGamesExcludesUnconnected(t *testing.T) {
 	app := &App{
 		config: config.Config{
 			Watch: config.WatchConfig{
@@ -372,6 +372,7 @@ func TestSortActiveGamesPrioritizesConnectedOverUnconnected(t *testing.T) {
 				ClaimDrops: config.Bool(true),
 			},
 		},
+		unconnectedGames: make(map[string]bool),
 	}
 
 	mockCampaignsJSON := `{
@@ -417,12 +418,8 @@ func TestSortActiveGamesPrioritizesConnectedOverUnconnected(t *testing.T) {
 	invClient := inventory.Client{Client: mockClient, UserID: "805921782"}
 
 	sorted, _ := app.sortActiveGames(context.Background(), invClient, nil, "")
-	// Expected Order:
-	// 1. Priority connected: "ConnectedPriority"
-	// 2. Priority unconnected: "UnconnectedPriority"
-	// 3. Other connected: "ConnectedOther"
-	// 4. Other unconnected: "UnconnectedOther"
-	expected := []string{"ConnectedPriority", "UnconnectedPriority", "ConnectedOther", "UnconnectedOther"}
+	// Unconnected games must be completely excluded from the farming ranking.
+	expected := []string{"ConnectedPriority", "ConnectedOther"}
 	if len(sorted) != len(expected) {
 		t.Fatalf("expected len %d, got %d (sorted = %v)", len(expected), len(sorted), sorted)
 	}
@@ -430,6 +427,12 @@ func TestSortActiveGamesPrioritizesConnectedOverUnconnected(t *testing.T) {
 		if sorted[i] != game {
 			t.Errorf("at index %d: expected %q, got %q", i, game, sorted[i])
 		}
+	}
+	if !app.isGameUnconnected("UnconnectedPriority") {
+		t.Errorf("expected UnconnectedPriority to be marked unconnected")
+	}
+	if !app.isGameUnconnected("UnconnectedOther") {
+		t.Errorf("expected UnconnectedOther to be marked unconnected")
 	}
 }
 
@@ -1537,6 +1540,101 @@ func TestCheckAndClaimDropsDeduplicatesAlreadyClaimedDrops(t *testing.T) {
 
 	if claimCalls != 1 {
 		t.Fatalf("expected claimCalls to remain 1 on second poll (deduplicated), got %d", claimCalls)
+	}
+}
+
+func TestCheckAndClaimDropsIgnoresUnconnectedGameDrops(t *testing.T) {
+	app := &App{
+		config: config.Config{
+			Features: config.FeatureConfig{
+				ClaimDrops: config.Bool(true),
+			},
+		},
+		logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		unconnectedGames: map[string]bool{gameKey("UnconnectedGame"): true},
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	eng := engine.New(app.config, nil, logger)
+
+	var claimCalls int
+	invClient := inventory.Client{Client: claimFlowGQLClient{
+		inventoryResponse: []byte(`{"currentUser":{"inventory":{"dropCampaignsInProgress":[
+			{
+				"id":"unconnected-campaign",
+				"name":"Unconnected Campaign",
+				"game":{"name":"UnconnectedGame"},
+				"timeBasedDrops":[{
+					"id":"unconnected-drop",
+					"name":"Some Reward",
+					"requiredMinutesWatched":60,
+					"self":{"currentMinutesWatched":60,"hasPreconditionsMet":true,"dropInstanceID":"instance-unconnected-1","isClaimed":false}
+				}]
+			}
+		]}}}`),
+		claimResponse: []byte(`{"claimDropRewards":{"status":"ELIGIBLE_FOR_ALL"}}`),
+		claimCalls:    &claimCalls,
+	}}
+
+	app.checkAndClaimDropsWithCampaignRefresh(context.Background(), eng, invClient, false)
+
+	if claimCalls != 0 {
+		t.Fatalf("expected 0 claim calls for unconnected game drop, got %d", claimCalls)
+	}
+	if !app.isDropInstanceClaimed("instance-unconnected-1") {
+		t.Fatal("expected instance-unconnected-1 to be marked in claimedInstances map to avoid retrying")
+	}
+}
+
+func TestCheckAndClaimDropsHandlesAccountNotConnectedError(t *testing.T) {
+	app := &App{
+		config: config.Config{
+			Features: config.FeatureConfig{
+				ClaimDrops: config.Bool(true),
+			},
+		},
+		logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		unconnectedGames: make(map[string]bool),
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	eng := engine.New(app.config, nil, logger)
+
+	var claimCalls int
+	invClient := inventory.Client{Client: claimFlowGQLClient{
+		inventoryResponse: []byte(`{"currentUser":{"inventory":{"dropCampaignsInProgress":[
+			{
+				"id":"failed-campaign",
+				"name":"Failed Campaign",
+				"game":{"name":"NewUnconnectedGame"},
+				"timeBasedDrops":[{
+					"id":"failed-drop",
+					"name":"Failed Reward",
+					"requiredMinutesWatched":60,
+					"self":{"currentMinutesWatched":60,"hasPreconditionsMet":true,"dropInstanceID":"instance-fail-1","isClaimed":false}
+				}]
+			}
+		]}}}`),
+		claimResponse: []byte(`{"claimDropRewards":{"status":"ACCOUNT_NOT_CONNECTED"}}`),
+		claimCalls:    &claimCalls,
+	}}
+
+	// First poll: attempts claim, Twitch returns ACCOUNT_NOT_CONNECTED, game is marked unconnected.
+	app.checkAndClaimDropsWithCampaignRefresh(context.Background(), eng, invClient, false)
+
+	if claimCalls != 1 {
+		t.Fatalf("expected 1 claim call on first poll, got %d", claimCalls)
+	}
+	if !app.isGameUnconnected("NewUnconnectedGame") {
+		t.Fatal("expected NewUnconnectedGame to be marked unconnected after error")
+	}
+	if !app.isDropInstanceClaimed("instance-fail-1") {
+		t.Fatal("expected instance-fail-1 to be marked in claimedInstances map")
+	}
+
+	// Second poll: game is now known to be unconnected; ClaimDrop must NOT be called again.
+	app.checkAndClaimDropsWithCampaignRefresh(context.Background(), eng, invClient, false)
+
+	if claimCalls != 1 {
+		t.Fatalf("expected claimCalls to remain 1 on second poll, got %d", claimCalls)
 	}
 }
 

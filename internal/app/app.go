@@ -60,6 +60,8 @@ type App struct {
 	chatDial               netutil.DialContextFunc
 	claimedInstancesMu     sync.RWMutex
 	claimedInstances       map[string]bool
+	unconnectedGamesMu     sync.RWMutex
+	unconnectedGames       map[string]bool
 	watchCreditMu          sync.Mutex
 	watchCreditProgress    map[string]int
 	lastWatchCreditAt      time.Time
@@ -145,6 +147,44 @@ func New(cfg config.Config, logger *slog.Logger, tokenStore auth.TokenStore) *Ap
 		tokenStore:       tokenStore,
 		chatCancels:      make(map[string]context.CancelFunc),
 		claimedInstances: make(map[string]bool),
+		unconnectedGames: make(map[string]bool),
+	}
+}
+
+func (a *App) isGameUnconnected(gameName string) bool {
+	if gameName == "" {
+		return false
+	}
+	a.unconnectedGamesMu.RLock()
+	defer a.unconnectedGamesMu.RUnlock()
+	if a.unconnectedGames == nil {
+		return false
+	}
+	return a.unconnectedGames[gameKey(gameName)]
+}
+
+func (a *App) markGameUnconnected(gameName string) {
+	if gameName == "" {
+		return
+	}
+	key := gameKey(gameName)
+	a.unconnectedGamesMu.Lock()
+	defer a.unconnectedGamesMu.Unlock()
+	if a.unconnectedGames == nil {
+		a.unconnectedGames = make(map[string]bool)
+	}
+	a.unconnectedGames[key] = true
+}
+
+func (a *App) markGameConnected(gameName string) {
+	if gameName == "" {
+		return
+	}
+	key := gameKey(gameName)
+	a.unconnectedGamesMu.Lock()
+	defer a.unconnectedGamesMu.Unlock()
+	if a.unconnectedGames != nil {
+		delete(a.unconnectedGames, key)
 	}
 }
 
@@ -589,6 +629,21 @@ func (a *App) checkAndClaimDropsWithCampaignRefresh(ctx context.Context, eng *en
 	activeGamesMap := make(map[string]bool)
 	for i := range drops {
 		drop := drops[i]
+		if a.isGameUnconnected(drop.GameName) {
+			drops[i].IsEarnable = false
+			drops[i].IsClaimable = false
+			if drop.IsClaimable {
+				a.logger.Info("ignoring claimable drop for unconnected game",
+					slog.String("id", drop.ID),
+					slog.String("game", drop.GameName),
+					slog.String("name", drop.Name),
+					slog.String("instance_id", drop.DropInstanceID),
+				)
+				a.markDropInstanceClaimed(drop.DropInstanceID)
+			}
+			continue
+		}
+
 		if !drop.IsClaimed && (drop.IsEarnable || drop.IsClaimable) {
 			campaign := drop.CampaignName
 			if campaign == "" {
@@ -637,6 +692,19 @@ func (a *App) checkAndClaimDropsWithCampaignRefresh(ctx context.Context, eng *en
 			success, err := invClient.ClaimDrop(ctx, drop.DropInstanceID)
 			a.markDropInstanceClaimed(drop.DropInstanceID)
 			if err != nil {
+				if errors.Is(err, inventory.ErrAccountNotConnected) {
+					a.markGameUnconnected(drop.GameName)
+					refreshActiveGames = true
+					a.logger.Warn("claim drop failed: game account not connected; ignoring game drops",
+						slog.String("id", drop.ID),
+						slog.String("game", drop.GameName),
+						slog.String("name", drop.Name),
+						slog.String("error", err.Error()),
+					)
+					drops[i].IsClaimable = false
+					drops[i].IsEarnable = false
+					continue
+				}
 				a.logger.Warn("claim drop failed",
 					slog.String("id", drop.ID),
 					slog.String("name", drop.Name),
@@ -1244,6 +1312,11 @@ func (a *App) discoverGamesStreamers(ctx context.Context, client gameStreamDisco
 	}
 
 	for i, game := range gamesToDiscover {
+		if a.isGameUnconnected(game) {
+			a.logger.Debug("skipping stream discovery for unconnected game", slog.String("game", game))
+			continue
+		}
+
 		if i > 0 {
 			select {
 			case <-ctx.Done():
@@ -2047,6 +2120,9 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 
 	for _, drop := range drops {
 		if drop.GameName != "" {
+			if a.isGameUnconnected(drop.GameName) {
+				continue
+			}
 			key := gameKey(drop.GameName)
 			hasAnyDrops[key] = true
 			if !drop.IsClaimed && drop.Completable(now) {
@@ -2061,6 +2137,9 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 
 	for _, drop := range drops {
 		if drop.IsEarnable && drop.GameName != "" {
+			if a.isGameUnconnected(drop.GameName) {
+				continue
+			}
 			key := gameKey(drop.GameName)
 			if !addedInProgress[key] {
 				addedInProgress[key] = true
@@ -2075,9 +2154,7 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 
 	// Categorize available games
 	var priorityConnectedAvailable []string
-	var priorityUnconnectedAvailable []string
 	var otherConnectedAvailable []string
-	var otherUnconnectedAvailable []string
 	availableGames := make(map[string]bool)
 
 	scanOK := true
@@ -2092,6 +2169,13 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 			}
 			a.logger.Warn("fetch active campaign games failed; using in-progress inventory", slog.String("error", err.Error()))
 		} else {
+			for _, game := range availableConnected {
+				a.markGameConnected(game)
+			}
+			for _, game := range availableUnconnected {
+				a.markGameUnconnected(game)
+			}
+
 			a.dropsMu.Lock()
 			a.lastActiveCampaignDrops = allDrops
 			a.dropsMu.Unlock()
@@ -2113,19 +2197,20 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 					otherConnectedAvailable = append(otherConnectedAvailable, game)
 				}
 			}
-			for _, game := range availableUnconnected {
-				key := gameKey(game)
-				if game == "" || inProgressMap[key] || seenConnected[key] {
-					continue
-				}
-				if a.isPriorityGame(game) {
-					priorityUnconnectedAvailable = append(priorityUnconnectedAvailable, game)
-				} else {
-					otherUnconnectedAvailable = append(otherUnconnectedAvailable, game)
-				}
-			}
 		}
 	}
+
+	filterConnected := func(games []string) []string {
+		var out []string
+		for _, g := range games {
+			if !a.isGameUnconnected(g) {
+				out = append(out, g)
+			}
+		}
+		return out
+	}
+	priorityInProgress = filterConnected(priorityInProgress)
+	otherInProgress = filterConnected(otherInProgress)
 
 	// Within each tier, farm the games with the least spare time first so
 	// campaigns about to end are not starved by comfortable ones. Games
@@ -2140,12 +2225,12 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 			return okI && spareI < spareJ
 		}
 	}
-	for _, tier := range [][]string{otherInProgress, otherConnectedAvailable, otherUnconnectedAvailable} {
+	for _, tier := range [][]string{otherInProgress, otherConnectedAvailable} {
 		sort.SliceStable(tier, byUrgency(tier))
 	}
 	// Priority tiers honor the configured list order first; urgency only
 	// breaks ties between games at the same configured position.
-	for _, tier := range [][]string{priorityInProgress, priorityConnectedAvailable, priorityUnconnectedAvailable} {
+	for _, tier := range [][]string{priorityInProgress, priorityConnectedAvailable} {
 		tier := tier
 		urgency := byUrgency(tier)
 		sort.SliceStable(tier, func(i, j int) bool {
@@ -2169,16 +2254,10 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 		for _, game := range priorityConnectedAvailable {
 			appendActiveGame(&sortedGames, gameRanks, game, activeGameRankPriorityAvailable)
 		}
-		for _, game := range priorityUnconnectedAvailable {
-			appendActiveGame(&sortedGames, gameRanks, game, activeGameRankPriorityAvailable)
-		}
 		for _, game := range otherInProgress {
 			appendActiveGame(&sortedGames, gameRanks, game, activeGameRankOtherInProgress)
 		}
 		for _, game := range otherConnectedAvailable {
-			appendActiveGame(&sortedGames, gameRanks, game, activeGameRankOtherAvailable)
-		}
-		for _, game := range otherUnconnectedAvailable {
 			appendActiveGame(&sortedGames, gameRanks, game, activeGameRankOtherAvailable)
 		}
 	} else {
@@ -2188,10 +2267,10 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 		for _, game := range priorityConnectedAvailable {
 			appendActiveGame(&sortedGames, gameRanks, game, activeGameRankPriorityAvailable)
 		}
-		for _, game := range priorityUnconnectedAvailable {
-			appendActiveGame(&sortedGames, gameRanks, game, activeGameRankPriorityAvailable)
-		}
 		for _, pg := range a.config.Watch.PriorityGames {
+			if a.isGameUnconnected(pg) {
+				continue
+			}
 			pgKey := gameKey(pg)
 			if hasAnyDrops[pgKey] && !hasFeasible[pgKey] && !availableGames[pgKey] {
 				continue
@@ -2212,6 +2291,14 @@ func (a *App) sortActiveGames(ctx context.Context, invClient inventory.Client, d
 
 	filtered := sortedGames[:0]
 	for _, game := range sortedGames {
+		if a.isGameUnconnected(game) {
+			if a.logger != nil {
+				a.logger.Debug("excluding unconnected game from farming",
+					slog.String("game", game),
+				)
+			}
+			continue
+		}
 		key := gameKey(game)
 		if hasAnyDrops[key] && !hasFeasible[key] && !availableGames[key] {
 			if a.logger != nil {
