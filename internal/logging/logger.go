@@ -26,7 +26,11 @@ func Setup(cfg config.LoggingConfig) (SetupResult, error) {
 	opts := &slog.HandlerOptions{Level: level}
 
 	// Create console handler (with colors)
-	consoleHandler := NewConsoleHandler(os.Stdout, level)
+	var consoleWriter io.Writer = os.Stdout
+	if cfg.Color != nil {
+		consoleWriter = NewColorWriterWithEnabled(os.Stdout, *cfg.Color)
+	}
+	consoleHandler := NewConsoleHandler(consoleWriter, level)
 
 	var closeFn func() error = func() error { return nil }
 	var handlers []slog.Handler = []slog.Handler{consoleHandler}

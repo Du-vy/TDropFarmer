@@ -18,8 +18,21 @@ func SupportsColor() bool {
 	return checkColorSupport(os.Stdout)
 }
 
+func forceColor() bool {
+	if v := os.Getenv("FORCE_COLOR"); v != "" && v != "0" {
+		return true
+	}
+	if v := os.Getenv("CLICOLOR_FORCE"); v != "" && v != "0" {
+		return true
+	}
+	return false
+}
+
 // checkColorSupport checks whether writing to w can support ANSI colors.
 func checkColorSupport(w io.Writer) bool {
+	if forceColor() {
+		return true
+	}
 	if os.Getenv("NO_COLOR") != "" {
 		return false
 	}

@@ -65,6 +65,7 @@ type LoggingConfig struct {
 	Level  string `json:"level"`
 	Format string `json:"format"`
 	File   string `json:"file"`
+	Color  *bool  `json:"color,omitempty"`
 }
 
 type NotificationConfig struct {

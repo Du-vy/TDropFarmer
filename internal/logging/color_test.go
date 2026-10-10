@@ -117,6 +117,23 @@ func TestCheckColorSupport_Env(t *testing.T) {
 			t.Error("expected checkColorSupport to be false when TERM=dumb")
 		}
 	})
+
+	t.Run("FORCE_COLOR enables color", func(t *testing.T) {
+		t.Setenv("NO_COLOR", "1")
+		t.Setenv("FORCE_COLOR", "1")
+		if !checkColorSupport(&buf) {
+			t.Error("expected checkColorSupport to be true when FORCE_COLOR is set")
+		}
+	})
+
+	t.Run("CLICOLOR_FORCE enables color", func(t *testing.T) {
+		t.Setenv("NO_COLOR", "1")
+		t.Setenv("FORCE_COLOR", "")
+		t.Setenv("CLICOLOR_FORCE", "1")
+		if !checkColorSupport(&buf) {
+			t.Error("expected checkColorSupport to be true when CLICOLOR_FORCE is set")
+		}
+	})
 }
 
 func TestConsoleHandler_ColorDisabled(t *testing.T) {

@@ -177,7 +177,11 @@ func (a *App) Run(ctx context.Context) error {
 		"\x1b[1;33m              T D R O P   F A R M E R\x1b[0m\n" +
 		"    Twitch Drops & Channel Points Farmer Bot in Go\n" +
 		"\x1b[1;36m============================================================\x1b[0m\n\n"
-	if !logging.SupportsColor() {
+	showColor := logging.SupportsColor()
+	if a.config.Logging.Color != nil {
+		showColor = *a.config.Logging.Color
+	}
+	if !showColor {
 		banner = logging.StripANSI(banner)
 	}
 	fmt.Print(banner)
