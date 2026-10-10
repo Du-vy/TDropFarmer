@@ -42,6 +42,14 @@ Para que aparezcan los hashes objetivo (que se imprimirán con una etiqueta llam
 * **`DropsPage_ClaimDropRewards`**:
   * **Acción**: En la página de tu inventario de Drops (`https://www.twitch.tv/drops/inventory`), haz clic en el botón de **Reclamar (Claim)** de cualquier Drop completado.
 
+### 3. Hashes de Descubrimiento de Canales y Juegos (Discovery)
+* **`DirectoryPage_Game`**:
+  * **Acción**: Ingresa a la página de cualquier juego o categoría en Twitch (ej. `https://www.twitch.tv/directory/category/rust` o cualquier juego que tenga drops activos).
+* **`DirectoryGameRedirect`**:
+  * **Acción**: Navega desde el buscador general o la lista principal de directorios hacia la categoría de un juego.
+* **`DropsHighlightService_AvailableDrops`**:
+  * **Acción**: En la página de cualquier categoría o directorio de juego, activa o haz clic en el filtro de etiqueta **Drops activados** (*DropsEnabled*).
+
 ---
 
 ## ¿Dónde actualizar los Hashes en el Código Go?
@@ -57,7 +65,15 @@ Archivo: **[internal/twitch/channelpoints/gql.go](file:///c:/Users/Pablo/Desktop
 ### B. Para Drops e Inventario:
 Archivo: **[internal/twitch/inventory/inventory.go](file:///c:/Users/Pablo/Desktop/GitHub/TDropFarmer/internal/twitch/inventory/inventory.go)**
 * Modificar:
-  * `inventoryHash` (línea ~17)
-  * `claimDropHash` (línea ~20)
-  * `viewerCampaignsHash` (línea ~23)
-  * `campaignDetailsHash` (línea ~26)
+  * `inventoryHash` (línea ~18)
+  * `claimDropHash` (línea ~21)
+  * `viewerCampaignsHash` (línea ~24)
+  * `campaignDetailsHash` (línea ~27)
+
+### C. Para Descubrimiento de Canales y Juegos:
+Archivo: **[internal/twitch/discovery/discovery.go](file:///c:/Users/Pablo/Desktop/GitHub/TDropFarmer/internal/twitch/discovery/discovery.go)**
+* Modificar:
+  * `gameDirectoryHash` (línea ~17)
+  * `gameRedirectHash` (línea ~20)
+  * `availableDropsHash` (línea ~23)
+

@@ -148,7 +148,7 @@ func (c Client) doOnce(ctx context.Context, body []byte) (Response, bool, time.D
 	if c.AccessToken != "" {
 		req.Header.Set("Authorization", "OAuth "+c.AccessToken)
 	}
-	profile.ApplyMobileApp(req)
+	profile.Apply(req)
 
 	client := c.HTTPClient
 	if client == nil {

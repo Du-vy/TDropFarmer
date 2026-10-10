@@ -22,8 +22,8 @@ func TestResolveUsers(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer access-token" {
 			t.Fatalf("Authorization = %q, want Bearer access-token", got)
 		}
-		if got := r.Header.Get("User-Agent"); got != profile.MobileAppUserAgent {
-			t.Fatalf("User-Agent = %q, want %q", got, profile.MobileAppUserAgent)
+		if got := r.Header.Get("User-Agent"); got != profile.UserAgent {
+			t.Fatalf("User-Agent = %q, want %q", got, profile.UserAgent)
 		}
 		logins := r.URL.Query()["login"]
 		if len(logins) != 2 || logins[0] != "one" || logins[1] != "two" {

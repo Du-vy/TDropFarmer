@@ -1522,8 +1522,8 @@ func indexStreamsByUserID(streams []twitch.StreamInfo) map[string]twitch.StreamI
 
 func (a *App) runMinuteWatched(ctx context.Context, eng *engine.Engine, gqlClient gql.Client) {
 	// Use the same Client ID and auth token as the rest of the app.
-	// The Browser Client ID requires Client-Integrity tokens that we don't
-	// generate, so we use the Android TV Client ID which works without them.
+	// The Web Browser Client ID requires Client-Integrity tokens that we don't
+	// generate, so we use the "Twitch for TV" Client ID which works without them.
 	fetcher := playback.TokenFetcher{Client: gqlClient}
 	watcher := playback.NewWatcher(fetcher)
 	watcher.SetHTTPClient(a.httpClient)

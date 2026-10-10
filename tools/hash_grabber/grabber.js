@@ -8,7 +8,10 @@
         "Inventory",
         "ViewerDropsDashboard",
         "DropCampaignDetails",
-        "DropsPage_ClaimDropRewards"
+        "DropsPage_ClaimDropRewards",
+        "DirectoryPage_Game",
+        "DirectoryGameRedirect",
+        "DropsHighlightService_AvailableDrops"
     ];
 
     const originalFetch = window.fetch;

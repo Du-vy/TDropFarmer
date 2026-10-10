@@ -235,7 +235,7 @@ func (f DeviceFlow) postForm(ctx context.Context, endpoint string, values url.Va
 }
 
 func (f DeviceFlow) doJSON(req *http.Request, target any) error {
-	profile.ApplyMobileApp(req)
+	profile.Apply(req)
 	client := f.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: 20 * time.Second}

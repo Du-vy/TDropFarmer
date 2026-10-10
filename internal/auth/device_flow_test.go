@@ -159,8 +159,8 @@ func TestDeviceFlowRefresh(t *testing.T) {
 
 func assertMobileUserAgent(t *testing.T, r *http.Request) {
 	t.Helper()
-	if got := r.Header.Get("User-Agent"); got != profile.MobileAppUserAgent {
-		t.Fatalf("User-Agent = %q, want %q", got, profile.MobileAppUserAgent)
+	if got := r.Header.Get("User-Agent"); got != profile.UserAgent {
+		t.Fatalf("User-Agent = %q, want %q", got, profile.UserAgent)
 	}
 }
 

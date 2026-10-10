@@ -112,7 +112,7 @@ func (c Client) doJSON(req *http.Request, target any) error {
 	req.Header.Set("Client-Id", c.ClientID)
 	req.Header.Set("Authorization", "Bearer "+c.AccessToken)
 	req.Header.Set("Accept", "application/json")
-	profile.ApplyMobileApp(req)
+	profile.Apply(req)
 
 	client := c.HTTPClient
 	if client == nil {

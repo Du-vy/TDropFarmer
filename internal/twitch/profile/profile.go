@@ -3,18 +3,21 @@ package profile
 import "net/http"
 
 const (
-	// MobileAppUserAgent matches the Android mobile Client-ID used for OAuth,
-	// GQL, and Helix.
-	MobileAppUserAgent = "Dalvik/2.1.0 (Linux; U; Android 16; SM-S938B Build/BP2A.250605.031) tv.twitch.android.app/30.3.0/3003006"
-	// WebPlayerUserAgent is reserved for the web/site playback flow and the
-	// unauthenticated Twitch settings bootstrap.
-	WebPlayerUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+	// UserAgent is the standard modern web browser User-Agent used across all
+	// Twitch HTTP interactions (OAuth device flow, GQL, Helix, and playback/telemetry).
+	UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+
+	// WebPlayerUserAgent is kept as an alias for backwards compatibility.
+	WebPlayerUserAgent = UserAgent
 )
 
-func ApplyMobileApp(req *http.Request) {
-	req.Header.Set("User-Agent", MobileAppUserAgent)
+// Apply sets the standard User-Agent header on an outgoing HTTP request.
+func Apply(req *http.Request) {
+	req.Header.Set("User-Agent", UserAgent)
 }
 
+// ApplyWebPlayer is an alias for Apply.
 func ApplyWebPlayer(req *http.Request) {
-	req.Header.Set("User-Agent", WebPlayerUserAgent)
+	Apply(req)
 }
+
