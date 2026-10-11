@@ -104,9 +104,10 @@ func loginCommand(args []string) error {
 
 	tokenStore := store.NewTokenStore(cfg.Storage.Path)
 	flow := auth.DeviceFlow{
-		ClientID: cfg.Auth.ClientID,
-		Scopes:   cfg.Auth.Scopes,
-		Store:    tokenStore,
+		ClientID:          cfg.Auth.ClientID,
+		FallbackClientIDs: []string{auth.LegacyClientID},
+		Scopes:            cfg.Auth.Scopes,
+		Store:             tokenStore,
 	}
 
 	if _, validation, err := flow.ValidToken(ctx); err == nil {

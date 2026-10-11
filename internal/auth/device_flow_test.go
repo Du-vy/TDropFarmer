@@ -155,6 +155,177 @@ func TestDeviceFlowRefresh(t *testing.T) {
 	if token.AccessToken != "new-access-token" {
 		t.Fatalf("access token = %q, want new-access-token", token.AccessToken)
 	}
+	if token.ClientID != "client-id" {
+		t.Fatalf("token client_id = %q, want client-id", token.ClientID)
+	}
+}
+
+func TestDeviceFlowValidToken_LegacyCompat(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertMobileUserAgent(t, r)
+		if r.URL.Path != "/validate" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "OAuth legacy-access-token" {
+			t.Fatalf("Authorization = %q, want OAuth legacy-access-token", got)
+		}
+		writeJSON(t, w, map[string]any{
+			"client_id":  LegacyClientID,
+			"login":      "legacy_user",
+			"user_id":    "5678",
+			"scopes":     []string{"user:read:email"},
+			"expires_in": 3600,
+		})
+	}))
+	defer server.Close()
+
+	store := &memoryTokenStore{
+		saved: true,
+		token: store.Token{
+			AccessToken:  "legacy-access-token",
+			RefreshToken: "legacy-refresh-token",
+			TokenType:    "bearer",
+			ExpiresAt:    time.Now().Add(2 * time.Hour),
+		},
+	}
+
+	flow := DeviceFlow{
+		ClientID:  DefaultClientID,
+		Endpoints: Endpoints{Validate: server.URL + "/validate"},
+		Store:     store,
+	}
+
+	token, validation, err := flow.ValidToken(context.Background())
+	if err != nil {
+		t.Fatalf("ValidToken failed for legacy client ID: %v", err)
+	}
+	if validation.ClientID != LegacyClientID {
+		t.Fatalf("validation client_id = %q, want %q", validation.ClientID, LegacyClientID)
+	}
+	if token.ClientID != LegacyClientID {
+		t.Fatalf("token client_id was not updated: got %q, want %q", token.ClientID, LegacyClientID)
+	}
+	if store.token.ClientID != LegacyClientID {
+		t.Fatalf("store token client_id was not saved: got %q, want %q", store.token.ClientID, LegacyClientID)
+	}
+}
+
+func TestDeviceFlowValidToken_MismatchError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertMobileUserAgent(t, r)
+		if r.URL.Path != "/validate" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(t, w, map[string]any{
+			"client_id":  "unrelated-client-id",
+			"login":      "some_user",
+			"user_id":    "9999",
+			"scopes":     []string{"user:read:email"},
+			"expires_in": 3600,
+		})
+	}))
+	defer server.Close()
+
+	store := &memoryTokenStore{
+		saved: true,
+		token: store.Token{
+			AccessToken: "some-access-token",
+			ExpiresAt:   time.Now().Add(time.Hour),
+		},
+	}
+
+	flow := DeviceFlow{
+		ClientID:  DefaultClientID,
+		Endpoints: Endpoints{Validate: server.URL + "/validate"},
+		Store:     store,
+	}
+
+	_, _, err := flow.ValidToken(context.Background())
+	if err == nil {
+		t.Fatalf("expected mismatch error, got nil")
+	}
+	expectedMsg := "token client ID mismatch: token belongs to unrelated-client-id, config requires " + DefaultClientID
+	if err.Error() != expectedMsg {
+		t.Fatalf("error = %q, want %q", err.Error(), expectedMsg)
+	}
+}
+
+func TestDeviceFlowValidToken_RefreshWithLegacyFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertMobileUserAgent(t, r)
+		switch r.URL.Path {
+		case "/token":
+			cid := r.PostFormValue("client_id")
+			if cid == DefaultClientID {
+				w.WriteHeader(http.StatusBadRequest)
+				writeJSON(t, w, map[string]any{"error": "invalid_grant", "message": "invalid client for refresh token"})
+				return
+			}
+			if cid == LegacyClientID {
+				writeJSON(t, w, map[string]any{
+					"access_token":  "refreshed-legacy-access-token",
+					"refresh_token": "refreshed-legacy-refresh-token",
+					"token_type":    "bearer",
+					"expires_in":    3600,
+				})
+				return
+			}
+			http.Error(w, "unexpected client_id", http.StatusBadRequest)
+		case "/validate":
+			if got := r.Header.Get("Authorization"); got != "OAuth refreshed-legacy-access-token" {
+				t.Fatalf("Authorization = %q, want OAuth refreshed-legacy-access-token", got)
+			}
+			writeJSON(t, w, map[string]any{
+				"client_id":  LegacyClientID,
+				"login":      "legacy_user",
+				"user_id":    "5678",
+				"scopes":     []string{"user:read:email"},
+				"expires_in": 3600,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	// Token expired 10 minutes ago, no client_id saved originally
+	store := &memoryTokenStore{
+		saved: true,
+		token: store.Token{
+			AccessToken:  "old-expired-token",
+			RefreshToken: "old-legacy-refresh-token",
+			TokenType:    "bearer",
+			ExpiresAt:    time.Now().Add(-10 * time.Minute),
+		},
+	}
+
+	flow := DeviceFlow{
+		ClientID: DefaultClientID,
+		Endpoints: Endpoints{
+			Token:    server.URL + "/token",
+			Validate: server.URL + "/validate",
+		},
+		Store: store,
+	}
+
+	token, validation, err := flow.ValidToken(context.Background())
+	if err != nil {
+		t.Fatalf("ValidToken failed with legacy refresh fallback: %v", err)
+	}
+	if token.AccessToken != "refreshed-legacy-access-token" {
+		t.Fatalf("access token = %q, want refreshed-legacy-access-token", token.AccessToken)
+	}
+	if token.ClientID != LegacyClientID {
+		t.Fatalf("token client_id = %q, want %q", token.ClientID, LegacyClientID)
+	}
+	if validation.ClientID != LegacyClientID {
+		t.Fatalf("validation client_id = %q, want %q", validation.ClientID, LegacyClientID)
+	}
+	if store.token.ClientID != LegacyClientID {
+		t.Fatalf("stored token client_id = %q, want %q", store.token.ClientID, LegacyClientID)
+	}
 }
 
 func assertMobileUserAgent(t *testing.T, r *http.Request) {

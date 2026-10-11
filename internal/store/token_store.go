@@ -15,6 +15,7 @@ type Token struct {
 	AccessToken  string    `json:"access_token"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	TokenType    string    `json:"token_type"`
+	ClientID     string    `json:"client_id,omitempty"`
 	Scopes       []string  `json:"scopes,omitempty"`
 	ExpiresAt    time.Time `json:"expires_at"`
 	ObtainedAt   time.Time `json:"obtained_at"`

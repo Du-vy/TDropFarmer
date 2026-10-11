@@ -15,7 +15,14 @@ import (
 	"github.com/Du-vy/TDropFarmer/internal/twitch/profile"
 )
 
-const deviceGrantType = "urn:ietf:params:oauth:grant-type:device_code"
+const (
+	deviceGrantType = "urn:ietf:params:oauth:grant-type:device_code"
+
+	// DefaultClientID is the Twitch Android TV OAuth client ID used by default.
+	DefaultClientID = "ue6666qo983tsx6so1t0vnawi233wa"
+	// LegacyClientID is the older Twitch Android App OAuth client ID supported for backwards compatibility.
+	LegacyClientID = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp"
+)
 
 type Endpoints struct {
 	Device   string
@@ -37,11 +44,12 @@ type TokenStore interface {
 }
 
 type DeviceFlow struct {
-	ClientID   string
-	Scopes     []string
-	HTTPClient *http.Client
-	Endpoints  Endpoints
-	Store      TokenStore
+	ClientID          string
+	FallbackClientIDs []string
+	Scopes            []string
+	HTTPClient        *http.Client
+	Endpoints         Endpoints
+	Store             TokenStore
 
 	PollIntervalOverride time.Duration
 }
@@ -58,6 +66,55 @@ type ValidateResult struct {
 	UserID    string   `json:"user_id"`
 	Scopes    []string `json:"scopes"`
 	ExpiresIn int      `json:"expires_in"`
+}
+
+func (f DeviceFlow) isClientCompatible(tokenClientID string) bool {
+	if f.ClientID == "" || tokenClientID == "" {
+		return true
+	}
+	if f.ClientID == tokenClientID {
+		return true
+	}
+	for _, fallback := range f.FallbackClientIDs {
+		if tokenClientID == fallback {
+			return true
+		}
+	}
+	// Built-in compatibility between official TDropFarmer client IDs
+	if (f.ClientID == DefaultClientID || f.ClientID == LegacyClientID) &&
+		(tokenClientID == DefaultClientID || tokenClientID == LegacyClientID) {
+		return true
+	}
+	return false
+}
+
+func (f DeviceFlow) refreshClientCandidates(tokenClientID string) []string {
+	var candidates []string
+	add := func(id string) {
+		if id == "" {
+			return
+		}
+		for _, existing := range candidates {
+			if existing == id {
+				return
+			}
+		}
+		candidates = append(candidates, id)
+	}
+
+	if tokenClientID != "" && f.isClientCompatible(tokenClientID) {
+		add(tokenClientID)
+	}
+	add(f.ClientID)
+	for _, fallback := range f.FallbackClientIDs {
+		add(fallback)
+	}
+	if f.ClientID == DefaultClientID {
+		add(LegacyClientID)
+	} else if f.ClientID == LegacyClientID {
+		add(DefaultClientID)
+	}
+	return candidates
 }
 
 func (f DeviceFlow) Login(ctx context.Context, prompt func(DevicePrompt)) (store.Token, error) {
@@ -84,6 +141,7 @@ func (f DeviceFlow) Login(ctx context.Context, prompt func(DevicePrompt)) (store
 	if err != nil {
 		return store.Token{}, err
 	}
+	token.ClientID = f.ClientID
 	if err := f.Store.Save(token); err != nil {
 		return store.Token{}, err
 	}
@@ -100,8 +158,16 @@ func (f DeviceFlow) ValidToken(ctx context.Context) (store.Token, ValidateResult
 	}
 
 	if token.RefreshToken != "" && time.Until(token.ExpiresAt) < time.Minute {
-		refreshed, err := f.Refresh(ctx, token.RefreshToken)
-		if err == nil {
+		candidates := f.refreshClientCandidates(token.ClientID)
+		var refreshed store.Token
+		var refreshErr error
+		for _, cid := range candidates {
+			refreshed, refreshErr = f.RefreshWithClient(ctx, token.RefreshToken, cid)
+			if refreshErr == nil {
+				break
+			}
+		}
+		if refreshErr == nil {
 			if err := f.Store.Save(refreshed); err != nil {
 				return store.Token{}, ValidateResult{}, err
 			}
@@ -113,18 +179,31 @@ func (f DeviceFlow) ValidToken(ctx context.Context) (store.Token, ValidateResult
 	if err != nil {
 		return store.Token{}, ValidateResult{}, err
 	}
-	if f.ClientID != "" && validation.ClientID != f.ClientID {
+	if !f.isClientCompatible(validation.ClientID) {
 		return store.Token{}, ValidateResult{}, fmt.Errorf("token client ID mismatch: token belongs to %s, config requires %s", validation.ClientID, f.ClientID)
 	}
+
+	if token.ClientID != validation.ClientID {
+		token.ClientID = validation.ClientID
+		_ = f.Store.Save(token)
+	}
+
 	return token, validation, nil
 }
 
 func (f DeviceFlow) Refresh(ctx context.Context, refreshToken string) (store.Token, error) {
+	return f.RefreshWithClient(ctx, refreshToken, f.ClientID)
+}
+
+func (f DeviceFlow) RefreshWithClient(ctx context.Context, refreshToken, clientID string) (store.Token, error) {
 	if refreshToken == "" {
 		return store.Token{}, fmt.Errorf("refresh token is required")
 	}
+	if clientID == "" {
+		clientID = f.ClientID
+	}
 	values := url.Values{}
-	values.Set("client_id", f.ClientID)
+	values.Set("client_id", clientID)
 	values.Set("grant_type", "refresh_token")
 	values.Set("refresh_token", refreshToken)
 
@@ -132,7 +211,9 @@ func (f DeviceFlow) Refresh(ctx context.Context, refreshToken string) (store.Tok
 	if err := f.postForm(ctx, f.endpoints().Token, values, &response); err != nil {
 		return store.Token{}, err
 	}
-	return response.toStoreToken(time.Now()), nil
+	token := response.toStoreToken(time.Now())
+	token.ClientID = clientID
+	return token, nil
 }
 
 func (f DeviceFlow) Validate(ctx context.Context, accessToken string) (ValidateResult, error) {
@@ -201,7 +282,9 @@ func (f DeviceFlow) pollToken(ctx context.Context, device deviceCodeResponse) (s
 		var response tokenResponse
 		err := f.postForm(ctx, f.endpoints().Token, values, &response)
 		if err == nil {
-			return response.toStoreToken(time.Now()), nil
+			token := response.toStoreToken(time.Now())
+			token.ClientID = f.ClientID
+			return token, nil
 		}
 
 		var oauthErr OAuthError

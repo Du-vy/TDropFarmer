@@ -251,10 +251,11 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	flow := auth.DeviceFlow{
-		ClientID:   a.config.Auth.ClientID,
-		Scopes:     a.config.Auth.Scopes,
-		HTTPClient: httpClient,
-		Store:      a.tokenStore,
+		ClientID:          a.config.Auth.ClientID,
+		FallbackClientIDs: []string{auth.LegacyClientID},
+		Scopes:            a.config.Auth.Scopes,
+		HTTPClient:        httpClient,
+		Store:             a.tokenStore,
 	}
 	token, validation, err := flow.ValidToken(ctx)
 	if err != nil {
@@ -283,6 +284,14 @@ func (a *App) Run(ctx context.Context) error {
 		slog.Int("expires_in", validation.ExpiresIn),
 	)
 	a.userID = validation.UserID
+
+	if validation.ClientID != "" && validation.ClientID != a.config.Auth.ClientID {
+		a.logger.Info("using backwards-compatible client ID from existing token",
+			slog.String("token_client_id", validation.ClientID),
+			slog.String("configured_client_id", a.config.Auth.ClientID),
+		)
+		a.config.Auth.ClientID = validation.ClientID
+	}
 
 	// TODO: the access token is captured once here and shared by every client
 	// for the lifetime of the process. If it expires or is revoked mid-run,
